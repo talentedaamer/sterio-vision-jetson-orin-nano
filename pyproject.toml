@@ -1,0 +1,29 @@
+[project]
+name = "object-detection-win"
+version = "0.1.0"
+description = "DeepStream-based real-time YOLOv8n detection and monocular/stereo distance estimation for dual IMX296 CSI cameras on Jetson Orin NX"
+requires-python = ">=3.10"
+dependencies = [
+    "nvidia-cudss-cu12>=0.7.1.4",
+    "onnx>=1.22.0",
+    "torch>=2.11.0",
+    "torchvision>=0.26.0",
+    "ultralytics>=8.4.87",
+    "pygobject>=3.48",
+]
+
+# NOTES (see CLAUDE.md for full detail):
+#
+# - torch/torchvision/ultralytics/onnx are only required for the existing,
+#   untouched .pt -> .engine export script. The DeepStream runtime app
+#   (main.py) does NOT use them — it runs the prebuilt TensorRT engine
+#   directly through gst-nvinfer.
+#
+# - This venv MUST be created with --system-site-packages so the OS-provided
+#   GStreamer Python bindings (the `gi` / PyGObject typelibs installed by
+#   apt alongside DeepStream) are importable:
+#       uv venv --system-site-packages
+#
+# - DeepStream's `pyds` module is NOT on PyPI. It ships as a wheel with the
+#   DeepStream 7.1 SDK and must be installed into this venv once:
+#       uv pip install /opt/nvidia/deepstream/deepstream-7.1/lib/pyds-*.whl
