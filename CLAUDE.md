@@ -27,10 +27,30 @@ them; it loads the prebuilt TensorRT engine directly through `gst-nvinfer`.
 One-time environment setup (already-installed DeepStream SDK, not repeated
 here as install steps since it's present on-device):
 ```bash
-uv venv --system-site-packages   # required so `gi`/PyGObject (OS-provided) is importable
+# If `uv run` was ever invoked before this, it will have already created a
+# wrong .venv (uv-downloaded interpreter, no system-site-packages) -- remove it:
+rm -rf .venv
+
+# Must be the SYSTEM Python 3.10, with --system-site-packages, so the
+# OS-provided `gi`/PyGObject (apt python3-gi, gir1.2-gst-1.0, etc.) is
+# importable. Do NOT let uv pick its own downloaded interpreter (e.g. 3.12) --
+# extension modules built for system 3.10 won't load under a different ABI.
+uv venv --system-site-packages --python /usr/bin/python3.10
 uv sync
-uv pip install /opt/nvidia/deepstream/deepstream-7.1/lib/pyds-*.whl  # pyds is not on PyPI
+
+# pyds is not on PyPI -- it ships as a wheel with the DeepStream SDK:
+uv pip install /opt/nvidia/deepstream/deepstream-7.1/lib/pyds-*.whl
+
+# Sanity check before running main.py:
+uv run python -c "import gi; gi.require_version('Gst','1.0'); \
+    gi.require_version('GstRtspServer','1.0'); \
+    from gi.repository import Gst, GstRtspServer; import pyds; print('ok')"
 ```
+Do **not** add `pygobject`/`pycairo` as a pip/uv dependency — that tries to
+compile pycairo from source against `libcairo2-dev` (usually missing) and,
+even if it built, would be a second ABI-mismatched copy shadowing the
+working system one. If the `GstRtspServer` import above fails, install the
+OS package instead: `sudo apt install gir1.2-gst-rtsp-server-1.0`.
 
 ## Model export (existing, untouched)
 
