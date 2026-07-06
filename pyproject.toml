@@ -106,7 +106,9 @@ torchvision = { index = "jetson-ai-lab" }
 #   machines, even ones running the "same" TensorRT version number. If
 #   yolov8n.engine was exported anywhere other than this exact Jetson (or
 #   another Orin-family board on the same TensorRT 10.3.0.30), nvinfer will
-#   fail to deserialize it. Re-run the (untouched) export script directly
-#   on this device, once `torch.cuda.is_available()` above is True:
-#       uv run python -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='engine', device='0', half=True, workspace=4)"
-#   then copy the resulting yolov8n.engine into models/.
+#   fail to deserialize it. Re-run the export directly on this device (same
+#   export call as always: format='engine', device='0', half=True,
+#   workspace=4) via export_engine.py, which adds diagnostics (torch/CUDA/
+#   TensorRT versions, free GPU memory, clear failure messages) around that
+#   unchanged call and copies the result into models/ for you:
+#       uv run python export_engine.py

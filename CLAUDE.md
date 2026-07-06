@@ -82,6 +82,12 @@ model = YOLO('yolov8n.pt')
 model.export(format='engine', device='0', half=True, workspace=4)
 ```
 
+Run via `uv run python export_engine.py` (project root) rather than typing
+this inline — same unchanged export call, wrapped with diagnostics (torch/
+CUDA/TensorRT versions, free GPU memory, clear failure messages) and it
+copies the result into `models/yolov8n.engine` for you. **Must be run
+directly on this exact Jetson** — see the TensorRT portability note below.
+
 Consequences this project's DeepStream config is built around:
 - **FP16**, default **640x640** input, **COCO-80** classes.
 - No `nms=True`/`end2end` export flag → the engine's output head is raw:
@@ -186,14 +192,17 @@ src/distance.py                            monocular X/Y/Z estimator (+ stereo p
 configs/pgie_yolov8n_config.txt            nvinfer config for the YOLOv8n engine
 configs/labels_coco.txt                    COCO-80 class names, index-matched to the engine's output
 nvdsinfer_custom_impl_yolov8/*.cpp/Makefile   custom bbox parser for the raw (no-NMS) YOLOv8 output head
-models/yolov8n.engine                      <- place your exported engine here (not committed)
+export_engine.py                           runs the (unchanged) .pt -> .engine export on-device with diagnostics, copies result into models/
+models/yolov8n.engine                      <- exported engine lives here (not committed)
 ```
 
 ## Build & run (on the Jetson)
 
 ```bash
-# 1. Place the exported engine
-cp /path/to/yolov8n.engine models/yolov8n.engine
+# 1. Export the engine directly on this device (TensorRT engines are not
+#    portable across machines -- see "Model export" above). Copies the
+#    result into models/yolov8n.engine automatically.
+uv run python export_engine.py
 
 # 2. Build the custom TensorRT-output parser (must be built on-device, aarch64)
 cd nvdsinfer_custom_impl_yolov8 && make && cd ..
