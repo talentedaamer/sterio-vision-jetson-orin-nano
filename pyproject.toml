@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "DeepStream-based real-time YOLOv8n detection and monocular/stereo distance estimation for dual IMX296 CSI cameras on Jetson Orin NX"
 requires-python = ">=3.10"
 dependencies = [
-    "nvidia-cudss-cu12>=0.7.1.4",
     "onnx>=1.22.0",
     "torch==2.11.0",
     "torchvision==0.26.0",
@@ -83,6 +82,24 @@ torchvision = { index = "jetson-ai-lab" }
 #       rm -f uv.lock && rm -rf .venv
 #       uv venv --system-site-packages --python /usr/bin/python3.10
 #       uv sync
+#
+# - The Jetson-native torch wheel above dynamically links system-wide
+#   cuDSS (and possibly cuSPARSELt) at import time -- NOT the pip
+#   nvidia-cudss-cu12 package (its .so lives inside site-packages, where
+#   Jetson torch's loader won't find it). Install cuDSS as a SYSTEM package
+#   via NVIDIA's local .deb installer for Linux / aarch64-jetson / Ubuntu
+#   22.04 (https://developer.nvidia.com/cudss-downloads), then verify:
+#       uv run python -c "import torch; print(torch.cuda.is_available())"
+#   Do NOT add `nvidia-cudss-cu12` (or any other pip `nvidia-*-cu12`
+#   package) back to `dependencies` above once the system package is
+#   installed: it pulls in pip `nvidia-cublas-cu12`/`nvidia-cuda-nvrtc-cu12`
+#   transitively, which are x86/SBSA-server builds, NOT Tegra-compatible.
+#   PyTorch's official wheel-build convention makes torch's loader prefer
+#   a sibling pip `nvidia/*/lib` package over the correct system Tegra
+#   library when both are present (they share the same `.so.12` name) --
+#   this silently breaks CUDA math calls with errors like
+#   `CUBLAS_STATUS_ALLOC_FAILED` even though `torch.cuda.is_available()`
+#   still reports True (that check doesn't exercise cuBLAS itself).
 #
 # - TensorRT engines are locked to the exact TensorRT version + GPU
 #   architecture they were built on -- they are NOT portable across
