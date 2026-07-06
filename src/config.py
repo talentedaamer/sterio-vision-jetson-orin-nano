@@ -59,7 +59,11 @@ TILER_HEIGHT = 720
 RTSP_PORT = 8554
 RTSP_MOUNT_POINT = "/ds-stereo"
 RTSP_UDP_PORT = 5400
-RTSP_BITRATE = 4_000_000
+# MJPEG via nvjpegenc (hardware NVJPG engine), not H.264 -- this Orin Nano
+# module has no hardware video encoder (NVENC fused off). Quality 0-100;
+# lower it (and/or shrink TILER_WIDTH/HEIGHT) if ground-station bandwidth is
+# tight, since MJPEG has no inter-frame compression like H.264 would have.
+RTSP_JPEG_QUALITY = 80
 
 # ---------------------------------------------------------------------------
 # Streammux

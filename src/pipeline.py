@@ -15,8 +15,16 @@ CPU-touching bytes are):
                                                                                                         |
                                               +-----------------------------------+---------------------+
                                               |                                                         |
-       queue -> nvvideoconvert -> I420 -> nvv4l2h264enc -> h264parse -> rtph264pay -> udpsink    queue -> nveglglessink
-       (RTSP out via GstRtspServer, always on)                                                   (debug/bench only)
+        queue -> nvvideoconvert -> I420 -> nvjpegenc -> rtpjpegpay -> udpsink              queue -> nveglglessink
+        (RTSP out via GstRtspServer, always on)                                            (debug/bench only)
+
+RTSP encode uses `nvjpegenc` (hardware MJPEG via the NVJPG engine), NOT
+`nvv4l2h264enc` -- this board is a Jetson Orin Nano module (confirmed via
+`jetson_release` P-Number p3767-0003), which has NVENC (H.264/H.265/AV1
+hardware encode) fused off. NVDEC and NVJPEG are still present. MJPEG-over-
+RTP keeps encoding on dedicated hardware instead of falling back to a
+CPU-bound software encoder (e.g. x264enc). See CLAUDE.md "Hardware video
+encode" for the full story.
 
 A probe on nvinfer's src pad (before tiling, so per-source bbox coordinates
 are still meaningful) extracts detections, computes X/Y/Z, and sets the OSD
@@ -90,8 +98,8 @@ def start_rtsp_server() -> GstRtspServer.RTSPServer:
     factory = GstRtspServer.RTSPMediaFactory.new()
     factory.set_launch(
         f"( udpsrc port={config.RTSP_UDP_PORT} "
-        f'caps="application/x-rtp, media=video, encoding-name=H264, payload=96" '
-        f"! rtph264depay ! rtph264pay name=pay0 pt=96 config-interval=1 )"
+        f'caps="application/x-rtp, media=video, encoding-name=JPEG, payload=26" '
+        f"! rtpjpegdepay ! rtpjpegpay name=pay0 pt=26 )"
     )
     factory.set_shared(True)
 
@@ -151,27 +159,24 @@ def build_pipeline(debug: bool = False) -> Gst.Pipeline:
     pgie_src_pad.add_probe(Gst.PadProbeType.BUFFER, pgie_src_pad_buffer_probe, None)
 
     # --- RTSP branch (always on) ------------------------------------------------
+    # nvjpegenc (NVJPG hardware engine) instead of nvv4l2h264enc (NVENC) --
+    # this Orin Nano module has no hardware H.264/H.265/AV1 encoder. See the
+    # module docstring above and CLAUDE.md for why.
     rtsp_queue = _make("queue", "rtsp_queue")
     rtsp_conv = _make("nvvideoconvert", "rtsp_conv")
     rtsp_caps = _make("capsfilter", "rtsp_caps")
     rtsp_caps.set_property("caps", Gst.Caps.from_string("video/x-raw(memory:NVMM), format=I420"))
-    rtsp_enc = _make("nvv4l2h264enc", "rtsp_enc")
-    rtsp_enc.set_property("bitrate", config.RTSP_BITRATE)
-    rtsp_enc.set_property("preset-level", 1)       # fast preset, low latency
-    rtsp_enc.set_property("control-rate", 1)       # constant bitrate
-    rtsp_enc.set_property("iframeinterval", config.FRAMERATE)
-    rtsp_enc.set_property("maxperf-enable", True)
-    rtsp_parse = _make("h264parse", "rtsp_parse")
-    rtsp_pay = _make("rtph264pay", "rtsp_pay")
-    rtsp_pay.set_property("pt", 96)
-    rtsp_pay.set_property("config-interval", 1)
+    rtsp_enc = _make("nvjpegenc", "rtsp_enc")
+    rtsp_enc.set_property("quality", config.RTSP_JPEG_QUALITY)
+    rtsp_pay = _make("rtpjpegpay", "rtsp_pay")
+    rtsp_pay.set_property("pt", 26)
     rtsp_sink = _make("udpsink", "rtsp_sink")
     rtsp_sink.set_property("host", "127.0.0.1")
     rtsp_sink.set_property("port", config.RTSP_UDP_PORT)
     rtsp_sink.set_property("sync", False)
     rtsp_sink.set_property("async", False)
 
-    _link_chain(pipeline, rtsp_queue, rtsp_conv, rtsp_caps, rtsp_enc, rtsp_parse, rtsp_pay, rtsp_sink)
+    _link_chain(pipeline, rtsp_queue, rtsp_conv, rtsp_caps, rtsp_enc, rtsp_pay, rtsp_sink)
     _add_tee_branch(tee, rtsp_queue)
 
     # --- debug/bench branch (only when --debug) ---------------------------------

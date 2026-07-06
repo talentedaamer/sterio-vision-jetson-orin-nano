@@ -1,4 +1,4 @@
-# object-detection-win — Jetson Orin NX Dual-Camera DeepStream Pipeline
+# sterio-vision-jetson-orin-nano — Jetson Orin Nano Dual-Camera DeepStream Pipeline
 
 UAV payload: real-time YOLOv8n detection + monocular distance estimation over
 dual IMX296 global-shutter CSI cameras, running 100% on GPU/dedicated hardware
@@ -7,17 +7,36 @@ localization, and MAVLink telemetry are future milestones (see "Next Steps").
 
 ## Target Hardware / Software (do not assume anything different)
 
+**Correction (confirmed on-device via `jetson_release`, 2026-07-06):** this
+board's SOM is a **Jetson Orin Nano 8GB (P-Number p3767-0003)**, not an Orin
+NX as originally assumed. The carrier board's device-tree reports its model
+string as "Orin NX Engineering Reference Developer Kit" because that carrier
+is a shared reference design used by both Orin Nano and Orin NX SOMs — it
+does not identify which SOM is actually plugged in. `jetson_release`'s
+P-Number is the authoritative source; trust that over the device-tree model
+string. This matters because **Orin Nano has no hardware video encoder
+(NVENC)** — see "Hardware video encode" below.
+
 | Component | Version |
 |---|---|
-| Hardware | NVIDIA Jetson Orin NX Engineering Reference Developer Kit |
+| Hardware | NVIDIA Jetson Orin Nano 8GB module (P-Number p3767-0003), on an Orin NX/Nano Engineering Reference Developer Kit carrier board |
 | OS | Ubuntu 22.04.5 LTS (Jammy) |
 | Kernel | Linux 5.15.148-tegra (aarch64) |
-| JetPack / L4T | JetPack 6.2.1 (L4T R36.4.4) |
+| JetPack / L4T | L4T R36.4.7 (`jetson_release` couldn't map this exact patch level to a JetPack version string — component versions below line up with JetPack 6.1/6.2) |
 | CUDA | 12.6 (V12.6.68) |
-| TensorRT | 10.3.0.30 (Python package `tensorrt==10.3.0`) |
-| DeepStream SDK | 7.1 (already installed at `/opt/nvidia/deepstream/deepstream-7.1`, matches JetPack 6.2.1 — do not reinstall) |
+| cuDNN | 9.3.0.75 |
+| TensorRT | 10.3.0.30 |
+| VPI | 3.2.4 |
+| DeepStream SDK | 7.1 (already installed at `/opt/nvidia/deepstream/deepstream-7.1` — do not reinstall). Python bindings (`pyds`) are NOT bundled on-device; installed from the [deepstream_python_apps v1.2.0](https://github.com/NVIDIA-AI-IOT/deepstream_python_apps/releases/tag/v1.2.0) release wheel — see setup below |
 | Python | 3.10 (uv-managed venv, `--system-site-packages`) |
+| Hardware video codecs | **NVDEC (decode): yes. NVJPEG (JPEG en/decode): yes. NVENC (H.264/H.265/AV1 encode): NO — fused off on this SKU.** |
 | Cameras | 2x IMX296 global shutter, CSI0 -> `/dev/video0`, CSI1 -> `/dev/video1` |
+
+Not chased, and deliberately out of scope for this pipeline: the `nvidia-jetpack`
+meta-package isn't installed (cosmetic — only affects `jetson_release`'s
+version-string lookup, not functionality; don't add a new apt source to fix
+it on a working board), and system OpenCV is built without CUDA (irrelevant
+here — this pipeline never calls `cv2`, DeepStream/TensorRT do all the work).
 
 Project deps (`pyproject.toml`) are managed with `uv`. `torch`/`torchvision`/
 `ultralytics`/`onnx` exist only to support the (already-working, do-not-touch)
@@ -38,8 +57,11 @@ rm -rf .venv
 uv venv --system-site-packages --python /usr/bin/python3.10
 uv sync
 
-# pyds is not on PyPI -- it ships as a wheel with the DeepStream SDK:
-uv pip install /opt/nvidia/deepstream/deepstream-7.1/lib/pyds-*.whl
+# pyds is not on PyPI, and this DS 7.1 install doesn't bundle the wheel
+# on-device either -- it's published on the deepstream_python_apps GitHub
+# releases page (https://github.com/NVIDIA-AI-IOT/deepstream_python_apps/releases/tag/v1.2.0).
+# v1.2.0 = DeepStream 7.1; grab the cp310/aarch64 wheel for this Jetson:
+uv pip install https://github.com/NVIDIA-AI-IOT/deepstream_python_apps/releases/download/v1.2.0/pyds-1.2.0-cp310-cp310-linux_aarch64.whl
 
 # Sanity check before running main.py:
 uv run python -c "import gi; gi.require_version('Gst','1.0'); \
@@ -86,8 +108,8 @@ nvarguscamerasrc(1) -/                                                     |
                                                                                       |
                                     +-----------------------------------+-------------+
                                     |                                                 |
-   queue -> nvvideoconvert -> I420 -> nvv4l2h264enc -> h264parse -> rtph264pay -> udpsink   queue -> nveglglessink
-   (RTSP out via GstRtspServer, ALWAYS on)                                          (bench display, --debug only)
+    queue -> nvvideoconvert -> I420 -> nvjpegenc -> rtpjpegpay -> udpsink     queue -> nveglglessink
+    (RTSP out via GstRtspServer, ALWAYS on)                                  (bench display, --debug only)
 ```
 
 - A pad probe on `nvinfer`'s **src pad** (before tiling, while bbox coords
@@ -101,6 +123,37 @@ nvarguscamerasrc(1) -/                                                     |
   The local display branch (`nveglglessink`) is added **only** when
   `config.DEBUG` / `--debug` is set — that's the "bench testing" toggle.
 
+### Hardware video encode: MJPEG (nvjpegenc), not H.264
+
+The pipeline originally used `nvv4l2h264enc` for the RTSP branch, which
+failed with `Failed to create GStreamer element 'nvv4l2h264enc'`. Root
+cause: **this Orin Nano SOM has no NVENC hardware encoder at all** (fused
+off on this SKU; only Orin NX/AGX Orin keep it) — confirmed by
+`nvidia-l4t-gstreamer` already being installed (so it wasn't a missing
+package), and independently by `jetson_release`'s P-Number identifying the
+module as Orin Nano. NVIDIA's own developer guide lists software (CPU)
+x264 as the documented default H.264 path on Orin Nano for exactly this
+reason.
+
+Rather than accept a CPU-bound software encoder — which would violate the
+"100% GPU/hardware, no CPU" requirement this project is built around — the
+RTSP branch instead uses **`nvjpegenc`**, which drives the **NVJPG**
+engine: a separate, dedicated hardware block that Orin Nano *does* keep
+(only the video-codec NVENC/NVDEC-encode side was removed; JPEG en/decode
+and general video decode via NVDEC are both intact). Trade-offs:
+- MJPEG has no inter-frame compression, so it's larger per frame than
+  H.264 at the same visual quality — tune `config.RTSP_JPEG_QUALITY`
+  (0-100) and/or `config.TILER_WIDTH/HEIGHT` if ground-station bandwidth is
+  tight.
+- Every MJPEG frame is independently decodable (no GOP/keyframe
+  structure), which is arguably nicer for a live low-latency monitoring
+  view — no multi-frame decode delay, no visible artifacting from a
+  dropped P-frame.
+- `nvjpegenc` still needs an NV12/I420 NVMM input, hence
+  `nvvideoconvert` before it in the RTSP branch (unchanged from the
+  original design, only the encoder+payloader swapped: `nvjpegenc` +
+  `rtpjpegpay` instead of `nvv4l2h264enc` + `h264parse` + `rtph264pay`).
+
 ### GPU utilization model — what actually touches which engine
 
 | Stage | Hardware |
@@ -110,13 +163,13 @@ nvarguscamerasrc(1) -/                                                     |
 | `nvinfer` (YOLOv8n) | TensorRT on GPU (CUDA cores) |
 | `nvvideoconvert` (NV12↔RGBA↔I420, scale/tile) | VIC (dedicated video/image compositor block) by default on Jetson — deliberately **not** forced to `compute-hw=GPU`, so it runs in parallel with TensorRT instead of contending for CUDA cores |
 | `nvdsosd` (box/text draw) | GPU (`process-mode=1`) |
-| `nvv4l2h264enc` | NVENC (dedicated hardware encoder) |
+| `nvjpegenc` | NVJPG (dedicated hardware JPEG codec engine — NOT NVENC, which this SKU lacks) |
 | RTP packetization / `udpsink` / GLib mainloop / distance math in the probe | ARM CPU — trivial control-plane work only (packet framing, tens of floats per frame), never touches pixels or tensors |
 
 No real video pipeline is *literally* 0% CPU (mainloop scheduling, RTP
 framing, and the Python distance-math probe all run on the ARM cores), but
 every pixel- and tensor-heavy stage — capture, batching, inference,
-colorspace/scale conversion, tiling, OSD compositing, H.264 encode — runs
+colorspace/scale conversion, tiling, OSD compositing, JPEG encode — runs
 on GPU or a dedicated hardware block. That's what determines whether the
 pipeline lags, and none of it touches the CPU.
 
@@ -175,7 +228,15 @@ ffplay rtsp://<jetson-ip>:8554/ds-stereo
   there when that milestone starts.
 - **Engine batch=1** (see export notes above) — revisit if fused-batch
   throughput becomes necessary once both cameras are running at full load.
-- RTSP branch currently sends **one composited (tiled) stream**, not two
-  independent per-camera streams — simplest/lowest-bandwidth for a ground
-  station view; revisit if the ground station needs full-resolution
-  per-camera feeds instead of the 1280x720 tiled composite.
+- RTSP branch currently sends **one composited (tiled) MJPEG stream**, not
+  two independent per-camera streams — simplest for a ground station view;
+  revisit if the ground station needs full-resolution per-camera feeds
+  instead of the 1280x720 tiled composite.
+- **RTSP is MJPEG (`nvjpegenc`), not H.264** — this Orin Nano SOM has no
+  hardware H.264 encoder (see "Hardware video encode" above). Uses more
+  bandwidth than H.264 would have at the same quality; tune
+  `RTSP_JPEG_QUALITY`/tiler resolution if the ground-station link is
+  constrained. If this project ever moves to an Orin NX/AGX Orin board
+  (which do have NVENC), swap `nvjpegenc`/`rtpjpegpay` back for
+  `nvv4l2h264enc`/`h264parse`/`rtph264pay` in `src/pipeline.py` for
+  better compression.

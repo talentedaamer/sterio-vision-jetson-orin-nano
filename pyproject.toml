@@ -41,9 +41,13 @@ python-preference = "only-system"
 #       uv venv --system-site-packages --python /usr/bin/python3.10
 #       uv sync
 #
-# - DeepStream's `pyds` module is NOT on PyPI. It ships as a wheel with the
-#   DeepStream 7.1 SDK and must be installed into this venv once:
-#       uv pip install /opt/nvidia/deepstream/deepstream-7.1/lib/pyds-*.whl
+# - DeepStream's `pyds` module is NOT on PyPI, and DS 7.1's on-device install
+#   does NOT bundle the wheel either (confirmed: nothing under
+#   /opt/nvidia/deepstream matches pyds*). It's published separately on the
+#   deepstream_python_apps GitHub releases page. For DS 7.1 + Python 3.10 +
+#   Jetson (aarch64), install the matching prebuilt wheel directly:
+#       uv pip install https://github.com/NVIDIA-AI-IOT/deepstream_python_apps/releases/download/v1.2.0/pyds-1.2.0-cp310-cp310-linux_aarch64.whl
+#   (source: https://github.com/NVIDIA-AI-IOT/deepstream_python_apps/releases/tag/v1.2.0 )
 #
 # - Sanity check before running main.py:
 #       uv run python -c "import gi; gi.require_version('Gst','1.0'); \
