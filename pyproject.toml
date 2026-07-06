@@ -6,8 +6,8 @@ requires-python = ">=3.10"
 dependencies = [
     "nvidia-cudss-cu12>=0.7.1.4",
     "onnx>=1.22.0",
-    "torch>=2.11.0",
-    "torchvision>=0.26.0",
+    "torch==2.11.0",
+    "torchvision==0.26.0",
     "ultralytics>=8.4.87",
 ]
 
@@ -17,6 +17,24 @@ dependencies = [
 # below), since that's the only interpreter ABI-compatible with the
 # apt-installed `gi`/PyGObject and DeepStream's `pyds` module.
 python-preference = "only-system"
+
+[[tool.uv.index]]
+# Jetson-native torch/torchvision builds (JetPack 6 / CUDA 12.6 / cp310 /
+# linux_aarch64). The default PyPI index only has generic desktop-CUDA
+# wheels for aarch64 (e.g. torch 2.12.1+cu130) which fail with
+# `torch.cuda.is_available() == False` on Jetson's Tegra GPU + CUDA 12.6
+# driver -- and any TensorRT engine exported with a CPU-only/wrong-CUDA
+# torch either fails to build or won't deserialize on this device
+# (`magicTag`/serialization-version mismatch).
+name = "jetson-ai-lab"
+url = "https://pypi.jetson-ai-lab.io/jp6/cu126"
+explicit = true
+
+[tool.uv.sources]
+# Pin ONLY torch/torchvision to the Jetson index; everything else still
+# resolves from default PyPI.
+torch = { index = "jetson-ai-lab" }
+torchvision = { index = "jetson-ai-lab" }
 
 # NOTES (see CLAUDE.md for full detail):
 #
@@ -55,3 +73,23 @@ python-preference = "only-system"
 #           from gi.repository import Gst, GstRtspServer; import pyds; print('ok')"
 #   If GstRtspServer fails to import, install the OS package (not a uv
 #   dependency): sudo apt install gir1.2-gst-rtsp-server-1.0
+#
+# - Sanity check that torch actually sees the GPU (must print True) before
+#   ever re-running the .pt -> .engine export on this device:
+#       uv run python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+#   If this was previously run before the [tool.uv.index]/[tool.uv.sources]
+#   entries above existed, the venv may have the wrong (PyPI, non-Jetson)
+#   torch cached -- force a clean re-resolve:
+#       rm -f uv.lock && rm -rf .venv
+#       uv venv --system-site-packages --python /usr/bin/python3.10
+#       uv sync
+#
+# - TensorRT engines are locked to the exact TensorRT version + GPU
+#   architecture they were built on -- they are NOT portable across
+#   machines, even ones running the "same" TensorRT version number. If
+#   yolov8n.engine was exported anywhere other than this exact Jetson (or
+#   another Orin-family board on the same TensorRT 10.3.0.30), nvinfer will
+#   fail to deserialize it. Re-run the (untouched) export script directly
+#   on this device, once `torch.cuda.is_available()` above is True:
+#       uv run python -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='engine', device='0', half=True, workspace=4)"
+#   then copy the resulting yolov8n.engine into models/.
