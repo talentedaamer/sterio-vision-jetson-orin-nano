@@ -190,16 +190,32 @@ and general video decode via NVDEC are both intact). Trade-offs:
 | `nvstreammux` batching | GPU/unified memory, no copy |
 | `nvinfer` (YOLOv8n) | TensorRT on GPU (CUDA cores) |
 | `nvvideoconvert` (NV12↔RGBA↔I420, scale/tile) | VIC (dedicated video/image compositor block) by default on Jetson — deliberately **not** forced to `compute-hw=GPU`, so it runs in parallel with TensorRT instead of contending for CUDA cores |
-| `nvdsosd` (box/text draw) | GPU (`process-mode=1`) |
+| `nvdsosd` box/line drawing | GPU (`process-mode=1`) |
+| `nvdsosd` **text** drawing (on-screen labels) | **CPU** — Pango/Cairo glyph rasterization; `process-mode` does not accelerate this in DeepStream's OSD plugin, this is a real, non-eliminable-while-keeping-readable-labels CPU cost |
 | `nvjpegenc` | NVJPG (dedicated hardware JPEG codec engine — NOT NVENC, which this SKU lacks) |
-| RTP packetization / `udpsink` / GLib mainloop / distance math in the probe | ARM CPU — trivial control-plane work only (packet framing, tens of floats per frame), never touches pixels or tensors |
+| RTP packetization / `udpsink` / GLib mainloop / distance math in the probe | ARM CPU — small per-frame work |
+| GStreamer pipeline orchestration (buffer/metadata passing, thread scheduling across ~15 elements x 2 camera paths) | ARM CPU |
 
-No real video pipeline is *literally* 0% CPU (mainloop scheduling, RTP
-framing, and the Python distance-math probe all run on the ARM cores), but
-every pixel- and tensor-heavy stage — capture, batching, inference,
-colorspace/scale conversion, tiling, OSD compositing, JPEG encode — runs
-on GPU or a dedicated hardware block. That's what determines whether the
-pipeline lags, and none of it touches the CPU.
+**Measured on-device (2026-07-07, `tegrastats`, both cameras live, full
+pipeline running):** `GR3D_FREQ` 65–87% (GPU genuinely busy — confirms
+inference/compute is real), CPU **all 6 cores at 45–70%** each. That CPU
+number is real and higher than this doc originally claimed ("trivial
+control-plane only") — corrected here rather than left wrong. Two
+contributors identified: (1) `on_detection()` in `src/probes.py` was
+`print()`-ing every detection at full pipeline framerate (up to 60fps x 2
+cameras) — fixed, now throttled to 2 Hz, since that was only ever a stdout
+placeholder ahead of real telemetry, not core functionality; (2) `nvdsosd`
+text-label rasterization (see table row above) plus normal GStreamer
+thread/metadata orchestration overhead across this many elements is a
+genuine, expected CPU floor for a DeepStream pipeline of this shape — not
+a bug, and not something eliminable via a config flag while keeping
+human-readable on-screen labels. The pipeline is not CPU-*bottlenecked*
+(cores aren't pegged at 100%, detection keeps up in real time), but "100%
+GPU / ~0% CPU" was an overstatement — all pixel- and tensor-heavy work
+(capture, inference, colorspace/scale conversion, box/line OSD draw, JPEG
+encode) does run on GPU or a dedicated hardware block, which is what
+actually determines whether the pipeline lags; a real CPU floor from
+orchestration + text rendering remains on top of that.
 
 ## File map
 
@@ -236,6 +252,31 @@ uv run main.py
 uv run main.py --debug
 # or: DS_DEBUG=1 uv run main.py
 ```
+
+Note: `--debug`'s local display (`nveglglessink`) needs an actual monitor
+physically connected to the Jetson (HDMI/DP) with a desktop session —
+it does nothing useful over a plain SSH session (no `DISPLAY`/compositor to
+attach to). Over SSH, just view the always-on RTSP stream from your own
+machine instead (`ffplay rtsp://<jetson-ip>:8554/ds-stereo`) — same tiled
+dual-camera view with detection overlays, no Jetson-side display needed.
+
+### Production deployment (systemd)
+
+`deploy/sterio-vision.service` runs the pipeline headless on boot,
+restarts on crash, and waits on `nvargus-daemon` (camera ISP) first. It
+calls the venv's `python` directly rather than `uv run`, so boot doesn't
+depend on `uv` re-checking the lockfile against the network — there may be
+no internet on this device in the field. Edit `User=`/`WorkingDirectory=`
+in the file if they don't match your actual username/path, then:
+```bash
+sudo cp deploy/sterio-vision.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now sterio-vision.service
+journalctl -u sterio-vision -f   # tail logs
+```
+Re-run `export_engine.py` and the `nvdsinfer_custom_impl_yolov8` build
+manually first if not already done — the service does not build/export
+anything itself, it only runs `main.py`.
 
 View the ground-station stream from a laptop on the same network:
 ```bash

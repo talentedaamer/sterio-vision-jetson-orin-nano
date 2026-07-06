@@ -1,0 +1,20 @@
+[Unit]
+Description=Dual-camera YOLOv8n DeepStream detection pipeline
+After=network.target nvargus-daemon.service
+Wants=nvargus-daemon.service
+
+[Service]
+Type=simple
+User=luca
+WorkingDirectory=/home/luca/Desktop/sterio-vision-jetson-orin-nano
+# Calls the venv's python directly (not `uv run`) so boot doesn't depend on
+# uv re-checking/re-resolving the lockfile against the network -- there may
+# be no internet on this device in the field.
+ExecStart=/home/luca/Desktop/sterio-vision-jetson-orin-nano/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

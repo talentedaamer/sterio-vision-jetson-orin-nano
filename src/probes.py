@@ -9,6 +9,8 @@ the tiled + OSD output.
 This is also the "headless" output path: on_detection() is the extension
 point for wiring detections into MAVLink / geolocation telemetry later.
 """
+import time
+
 import gi
 
 gi.require_version("Gst", "1.0")
@@ -18,12 +20,25 @@ import pyds
 from . import config
 from .distance import Detection, estimate_xyz
 
+# Printing every detection at full pipeline framerate (up to 60fps x 2
+# cameras) measurably costs CPU on-device -- an SSH-terminal print() is a
+# blocking syscall, not free. This was only ever a stdout placeholder ahead
+# of real telemetry, so throttle it; on_detection() itself is still called
+# for every detection so a future MAVLink hook gets full-rate data.
+_LOG_INTERVAL_S = 0.5
+_last_log_time = 0.0
+
 
 def on_detection(detection: Detection) -> None:
     """Extension point: wire this to MAVLink / geolocation telemetry.
 
-    Currently just logs to stdout.
+    Currently just logs to stdout, throttled -- see module docstring.
     """
+    global _last_log_time
+    now = time.monotonic()
+    if now - _last_log_time < _LOG_INTERVAL_S:
+        return
+    _last_log_time = now
     print(
         f"[cam{detection.source_id}] {detection.label} "
         f"conf={detection.confidence:.2f} "
