@@ -88,6 +88,28 @@ CUDA/TensorRT versions, free GPU memory, clear failure messages) and it
 copies the result into `models/yolov8n.engine` for you. **Must be run
 directly on this exact Jetson** — see the TensorRT portability note below.
 
+**Ultralytics' `.engine` files are not a bare TensorRT plan.** They're
+prefixed with a length-tagged JSON metadata blob (4-byte little-endian
+length, then that many bytes of JSON: model description, stride, names,
+imgsz, batch, ...) that Ultralytics' own `YOLO(...)` loader knows to skip.
+`nvinfer` (and TensorRT's raw `deserialize_cuda_engine()`) don't know about
+this wrapper and choke on the JSON text where they expect the plan's magic
+tag — producing an `IRuntime::deserializeCudaEngine` /
+"incompatible serialization version" error that looks *identical* to a
+genuine TensorRT version or GPU-architecture mismatch (this cost real
+debugging time before a hex dump of the file exposed it:
+`2707 0000 7b22 6465 7363 7269 7074 696f 6e22...` = length `0x727`, then
+`{"description"...`). `export_engine.py`'s `install_engine()` strips this
+header automatically before writing to `models/yolov8n.engine` — if you
+ever export by hand instead of via that script, either use `YOLO(...)` to
+load it (which handles the wrapper) or strip it yourself:
+```python
+import struct
+data = open("yolov8n.engine", "rb").read()
+n = struct.unpack("<I", data[:4])[0]
+open("models/yolov8n.engine", "wb").write(data[4 + n:])
+```
+
 Consequences this project's DeepStream config is built around:
 - **FP16**, default **640x640** input, **COCO-80** classes.
 - No `nms=True`/`end2end` export flag → the engine's output head is raw:

@@ -9,7 +9,7 @@ locked to the exact TensorRT version + GPU architecture they were built on
 -- they must be exported directly on this Jetson (see CLAUDE.md). Run with:
     uv run python export_engine.py
 """
-import shutil
+import struct
 import sys
 import time
 import traceback
@@ -93,12 +93,36 @@ def run_export() -> Path:
     return Path(result_path)
 
 
+def _strip_ultralytics_header(data: bytes) -> bytes:
+    """Ultralytics' engine export prepends a length-prefixed JSON metadata
+    blob (model description, stride, names, imgsz, batch, ...) before the
+    actual TensorRT plan: 4-byte little-endian length, then that many bytes
+    of JSON. Ultralytics' own YOLO(...) loader knows to skip it, but
+    nvinfer -- and TensorRT's raw deserialize_cuda_engine() -- expect a
+    bare plan starting at byte 0. Left in place, this produces a
+    `magicTag`/"incompatible serialization version" error that looks
+    identical to a genuine TensorRT version/architecture mismatch (cost a
+    lot of debugging time before the hex dump gave it away).
+    """
+    if len(data) < 4:
+        return data
+    (json_len,) = struct.unpack("<I", data[:4])
+    header_end = 4 + json_len
+    if header_end >= len(data) or data[4:5] != b"{":
+        return data  # doesn't look wrapped -- assume already a raw plan
+    return data[header_end:]
+
+
 def install_engine(exported_path: Path) -> None:
     _section("Install")
     if not exported_path.exists():
         print(f"FATAL: expected exported engine at {exported_path}, not found.")
         sys.exit(1)
-    shutil.copy2(exported_path, ENGINE_DEST)
+    raw = exported_path.read_bytes()
+    plan = _strip_ultralytics_header(raw)
+    if len(plan) != len(raw):
+        print(f"Stripped Ultralytics metadata header ({len(raw) - len(plan)} bytes) so nvinfer gets a raw TensorRT plan.")
+    ENGINE_DEST.write_bytes(plan)
     print(f"{exported_path} -> {ENGINE_DEST} ({ENGINE_DEST.stat().st_size / (1024**2):.1f} MiB)")
 
 
