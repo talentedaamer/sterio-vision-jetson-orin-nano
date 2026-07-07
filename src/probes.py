@@ -8,8 +8,12 @@ the tiled + OSD output.
 
 This is also the "headless" output path: on_detection() is the extension
 point for wiring detections into MAVLink / geolocation telemetry later.
+Other code (e.g. the --debug 3D plot in src/debug_plot.py) can subscribe
+to every Detection via register_detection_listener() below, without
+touching this file.
 """
 import time
+from typing import Callable
 
 import gi
 
@@ -28,12 +32,30 @@ from .distance import Detection, estimate_xyz
 _LOG_INTERVAL_S = 0.5
 _last_log_time = 0.0
 
+_listeners: list[Callable[[Detection], None]] = []
+
+
+def register_detection_listener(callback: Callable[[Detection], None]) -> None:
+    """Subscribe to receive every Detection (full rate, not throttled).
+
+    Called from a GStreamer streaming thread, not the main/GLib thread --
+    keep callbacks cheap (e.g. append to a buffer) and thread-safe. Used by
+    the --debug 3D plot; a future MAVLink/geolocation hook can subscribe
+    the same way instead of editing on_detection() directly.
+    """
+    _listeners.append(callback)
+
 
 def on_detection(detection: Detection) -> None:
     """Extension point: wire this to MAVLink / geolocation telemetry.
 
-    Currently just logs to stdout, throttled -- see module docstring.
+    Every registered listener (see register_detection_listener()) gets
+    every detection at full rate. The default stdout log below is
+    throttled -- see module docstring.
     """
+    for listener in _listeners:
+        listener(detection)
+
     global _last_log_time
     now = time.monotonic()
     if now - _last_log_time < _LOG_INTERVAL_S:

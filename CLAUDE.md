@@ -225,8 +225,9 @@ pyproject.toml                             uv project + deps
 main.py                                    entry point, arg parsing, GLib mainloop, bus/error handling
 src/config.py                              all tunables (camera, model, classes, RTSP, tiler)
 src/pipeline.py                            GStreamer/DeepStream pipeline construction
-src/probes.py                              per-frame metadata probe: class filter, distance calc, OSD text
+src/probes.py                              per-frame metadata probe: class filter, distance calc, OSD text; register_detection_listener() is the subscribe point for every Detection (full rate)
 src/distance.py                            monocular X/Y/Z estimator (+ stereo placeholder)
+src/debug_plot.py                          --debug-only live 3D scatter plot of detection X/Y/Z (matplotlib); needs a display + GUI backend, same caveat as nveglglessink
 configs/pgie_yolov8n_config.txt            nvinfer config for the YOLOv8n engine
 configs/labels_coco.txt                    COCO-80 class names, index-matched to the engine's output
 nvdsinfer_custom_impl_yolov8/*.cpp/Makefile   custom bbox parser for the raw (no-NMS) YOLOv8 output head
