@@ -53,8 +53,8 @@ FOCAL_LENGTH_PX = 800.0   # calibrate per-camera; same lens assumed on both IMX2
 # ---------------------------------------------------------------------------
 TILER_ROWS = 1
 TILER_COLS = 2
-TILER_WIDTH = 1280    # composite output width (both tiles combined)
-TILER_HEIGHT = 720
+TILER_WIDTH = 1456    # composite output width (both tiles combined)
+TILER_HEIGHT = 1088
 
 RTSP_PORT = 8554
 RTSP_MOUNT_POINT = "/ds-stereo"
