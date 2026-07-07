@@ -181,11 +181,17 @@ def build_pipeline(debug: bool = False) -> Gst.Pipeline:
 
     # --- debug/bench branch (only when --debug) ---------------------------------
     if debug:
+        # nvdsosd -> nveglglessink directly (no conversion) caused a caps
+        # negotiation failure on-device ("not-negotiated (-4)") as soon as
+        # this branch actually got exercised. NVIDIA's own reference
+        # DeepStream apps always insert an nvvideoconvert before the final
+        # display sink even when it looks redundant -- do the same here.
         debug_queue = _make("queue", "debug_queue")
+        debug_conv = _make("nvvideoconvert", "debug_conv")
         debug_sink = _make("nveglglessink", "debug_sink")
         debug_sink.set_property("sync", False)
 
-        _link_chain(pipeline, debug_queue, debug_sink)
+        _link_chain(pipeline, debug_queue, debug_conv, debug_sink)
         _add_tee_branch(tee, debug_queue)
 
     return pipeline
