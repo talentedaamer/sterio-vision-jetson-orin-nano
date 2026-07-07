@@ -73,13 +73,19 @@ def main() -> int:
         # mission mode is actually configured, zero cost/impact otherwise.
         from src.mavlink_link import MavlinkLink
         from src.mission import Mission
-        from src.probes import register_detection_listener, register_frame_status_provider
+        from src.probes import (
+            register_detection_listener,
+            register_follow_active_query,
+            register_frame_status_provider,
+        )
 
         mavlink = MavlinkLink()
         mavlink.connect()
         mission = Mission(mavlink)
         register_detection_listener(mission.on_detection)
         register_frame_status_provider(mission.status_text)  # on-screen HUD, RTSP + --debug
+        if mission.follow is not None:
+            register_follow_active_query(lambda: mission.follow.active)  # red lock-on box + center marker
         GLib.timeout_add(int(config.FOLLOW_UPDATE_INTERVAL_S * 1000), mission.update)
         print(f"[main] mission mode: {config.MISSION_MODE} (dry_run={config.FOLLOW_DRY_RUN})")
 

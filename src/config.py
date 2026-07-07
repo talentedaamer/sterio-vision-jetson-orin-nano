@@ -93,7 +93,7 @@ MISSION_MODE = os.environ.get("MISSION_MODE", "NONE").upper()
 # --- FOLLOW ---
 FOLLOW_TARGET_CLASS = 0           # COCO id to follow -- 0 = person
 FOLLOW_TRIGGER_FLIGHT_MODE = "GUIDED"
-FOLLOW_TARGET_DISTANCE_M = 5.0    # standoff distance to hold from the target (Z axis)
+FOLLOW_TARGET_DISTANCE_M = 3.0    # standoff distance to hold from the target (Z axis)
 FOLLOW_MAX_VELOCITY_MPS = 1.5     # hard clamp on every axis -- keep conservative until flight-tested
 FOLLOW_UPDATE_INTERVAL_S = 0.2    # 5 Hz control loop; plenty for velocity setpoints
 # (kp, ki, kd) -- untuned starting points, NOT validated gains. Must be

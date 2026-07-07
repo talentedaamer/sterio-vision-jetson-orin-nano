@@ -332,7 +332,25 @@ pipeline for anyone not using this.
   second probe on `nvdsosd`'s sink pad (`osd_sink_pad_status_probe()` in
   `src/probes.py` — runs after tiling, so there's exactly one composited
   frame to draw the HUD on, unlike the per-object probe on `nvinfer`'s src
-  pad which runs before tiling).
+  pad which runs before tiling). `update()` also prints immediately on a
+  link-health or flight-mode *change* (`[mavlink] heartbeat LOST...`,
+  `[mavlink] flight mode changed: STABILIZE -> GUIDED`), on top of the
+  periodic line, since those are the events worth seeing right away.
+- **On-screen target lock** — while FOLLOW is active, any detection
+  matching `config.FOLLOW_TARGET_CLASS` is drawn with a **red** box (vs.
+  the normal green), a small red center-dot marker, and its label switches
+  to `TARGET LOCKED | <class> | Dist: X.Xm` (`pgie_src_pad_buffer_probe()`
+  in `src/probes.py`, gated by `register_follow_active_query()`). No
+  tracker exists yet, so with more than one matching object in frame, all
+  of them get marked — only one actually drives
+  `ObjectFollowController`. The center-dot is added as frame-level display
+  meta *before* the tiler (same as the box/text); this hasn't yet been
+  visually confirmed to survive the tiler's coordinate remap the same way
+  `rect_params`/`text_params` reliably do — check this on-device.
+- Per-detection X/Y/Z is **no longer printed to stdout** on every
+  detection (it was redundant with the video overlay and the `--debug` 3D
+  plot, and was the CPU-cost fix from earlier in this project's history) —
+  `src/mission.py`'s status log is the console output now.
 
 **Safety, read before ever touching `FOLLOW_DRY_RUN`:** this drives real
 vehicle motion and has not been validated against real flight hardware.

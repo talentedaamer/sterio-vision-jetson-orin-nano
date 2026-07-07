@@ -8,9 +8,16 @@ the tiled + OSD output.
 
 This is also the "headless" output path: on_detection() is the extension
 point for wiring detections into MAVLink / geolocation telemetry later.
-Other code (e.g. the --debug 3D plot in src/debug_plot.py) can subscribe
-to every Detection via register_detection_listener() below, without
-touching this file.
+Other code (e.g. the --debug 3D plot in src/debug_plot.py, src/mission.py)
+can subscribe to every Detection via register_detection_listener() below,
+without touching this file. Per-detection X/Y/Z is intentionally NOT
+printed to stdout here -- it's already visible on the RTSP/--debug video
+overlay and the --debug 3D plot; see src/mission.py's status log for the
+MAVLink/mission-focused console output instead.
+
+register_follow_active_query() lets src/mission.py report whether FOLLOW
+is currently locked onto a target, so the object matching
+config.FOLLOW_TARGET_CLASS is drawn red (locked) instead of green here.
 
 osd_sink_pad_status_probe() is a separate probe, attached to nvdsosd's
 SINK pad (after tiling, so there's exactly one composited frame to draw
@@ -20,7 +27,6 @@ visible in both the RTSP stream and the --debug local display. Optional:
 a no-op until something calls register_frame_status_provider() (see
 src/mission.py via main.py).
 """
-import time
 from typing import Callable, Optional
 
 import gi
@@ -32,16 +38,9 @@ import pyds
 from . import config
 from .distance import Detection, estimate_xyz
 
-# Printing every detection at full pipeline framerate (up to 60fps x 2
-# cameras) measurably costs CPU on-device -- an SSH-terminal print() is a
-# blocking syscall, not free. This was only ever a stdout placeholder ahead
-# of real telemetry, so throttle it; on_detection() itself is still called
-# for every detection so a future MAVLink hook gets full-rate data.
-_LOG_INTERVAL_S = 0.5
-_last_log_time = 0.0
-
 _listeners: list[Callable[[Detection], None]] = []
 _frame_status_provider: Optional[Callable[[], Optional[str]]] = None
+_follow_active_query: Optional[Callable[[], bool]] = None
 
 
 def register_frame_status_provider(callback: Callable[[], Optional[str]]) -> None:
@@ -54,13 +53,22 @@ def register_frame_status_provider(callback: Callable[[], Optional[str]]) -> Non
     _frame_status_provider = callback
 
 
+def register_follow_active_query(callback: Callable[[], bool]) -> None:
+    """Register a zero-argument callback returning True while FOLLOW is
+    actively locked onto a target (e.g. mission.follow.active). While
+    True, any detection matching config.FOLLOW_TARGET_CLASS is drawn red
+    with a center marker instead of the normal green box. Called on the
+    streaming thread -- keep it cheap."""
+    global _follow_active_query
+    _follow_active_query = callback
+
+
 def register_detection_listener(callback: Callable[[Detection], None]) -> None:
-    """Subscribe to receive every Detection (full rate, not throttled).
+    """Subscribe to receive every Detection (full rate).
 
     Called from a GStreamer streaming thread, not the main/GLib thread --
     keep callbacks cheap (e.g. append to a buffer) and thread-safe. Used by
-    the --debug 3D plot; a future MAVLink/geolocation hook can subscribe
-    the same way instead of editing on_detection() directly.
+    the --debug 3D plot and src/mission.py.
     """
     _listeners.append(callback)
 
@@ -69,22 +77,10 @@ def on_detection(detection: Detection) -> None:
     """Extension point: wire this to MAVLink / geolocation telemetry.
 
     Every registered listener (see register_detection_listener()) gets
-    every detection at full rate. The default stdout log below is
-    throttled -- see module docstring.
+    every detection at full rate.
     """
     for listener in _listeners:
         listener(detection)
-
-    global _last_log_time
-    now = time.monotonic()
-    if now - _last_log_time < _LOG_INTERVAL_S:
-        return
-    _last_log_time = now
-    print(
-        f"[cam{detection.source_id}] {detection.label} "
-        f"conf={detection.confidence:.2f} "
-        f"X={detection.x_m:.2f} Y={detection.y_m:.2f} Z={detection.z_m:.2f}m"
-    )
 
 
 def pgie_src_pad_buffer_probe(pad, info, u_data):
@@ -135,20 +131,55 @@ def pgie_src_pad_buffer_probe(pad, info, u_data):
             )
             on_detection(detection)
 
-            rect.border_width = 2
-            rect.border_color.set(0.0, 1.0, 0.0, 1.0)
+            # A detection is drawn as the "locked" target -- red box, center
+            # marker, distance called out -- while FOLLOW is actively locked
+            # on AND it matches the class being followed. There's no object
+            # tracker yet (see CLAUDE.md/README roadmap), so with more than
+            # one matching object in frame, all of them are marked; only one
+            # actually drives ObjectFollowController (src/pid.py).
+            is_locked_target = (
+                _follow_active_query is not None
+                and _follow_active_query()
+                and obj_meta.class_id == config.FOLLOW_TARGET_CLASS
+            )
+
+            rect.border_width = 3 if is_locked_target else 2
+            if is_locked_target:
+                rect.border_color.set(1.0, 0.0, 0.0, 1.0)
+            else:
+                rect.border_color.set(0.0, 1.0, 0.0, 1.0)
             rect.has_bg_color = 0
 
             txt = obj_meta.text_params
-            txt.display_text = (
-                f"{detection.label} {detection.confidence:.2f} | "
-                f"X:{x:.1f} Y:{y:.1f} Z:{z:.1f}m"
-            )
+            if is_locked_target:
+                txt.display_text = f"TARGET LOCKED | {detection.label} | Dist: {z:.1f}m"
+            else:
+                txt.display_text = (
+                    f"{detection.label} {detection.confidence:.2f} | "
+                    f"X:{x:.1f} Y:{y:.1f} Z:{z:.1f}m"
+                )
             txt.font_params.font_name = "Sans"
             txt.font_params.font_size = 11
             txt.font_params.font_color.set(1.0, 1.0, 1.0, 1.0)
             txt.set_bg_clr = 1
-            txt.text_bg_clr.set(0.0, 0.0, 0.0, 0.6)
+            if is_locked_target:
+                txt.text_bg_clr.set(0.6, 0.0, 0.0, 0.7)
+            else:
+                txt.text_bg_clr.set(0.0, 0.0, 0.0, 0.6)
+
+            if is_locked_target:
+                cx = rect.left + rect.width / 2.0
+                cy = rect.top + rect.height / 2.0
+                marker_meta = pyds.nvds_acquire_display_meta_from_pool(batch_meta)
+                marker_meta.num_circles = 1
+                circle = marker_meta.circle_params[0]
+                circle.xc = int(cx)
+                circle.yc = int(cy)
+                circle.radius = 6
+                circle.circle_color.set(1.0, 0.0, 0.0, 1.0)
+                circle.has_bg_color = 1
+                circle.bg_color.set(1.0, 0.0, 0.0, 1.0)
+                pyds.nvds_add_display_meta_to_frame(frame_meta, marker_meta)
 
             l_obj = l_next
 

@@ -17,6 +17,12 @@ live flight mode, follow state) -- printed to the console periodically by
 update() below, and also wired (via main.py) into
 src.probes.register_frame_status_provider() to draw the same line as an
 on-screen HUD overlay on the video itself.
+
+update() also prints immediately whenever the link health or the flight
+controller's live flight mode actually CHANGES (heartbeat lost/restored,
+mode switched via the RC), on top of the periodic status heartbeat --
+these are the events worth seeing right away rather than waiting for the
+next periodic line.
 """
 import time
 
@@ -33,6 +39,8 @@ class Mission:
         self.follow = ObjectFollowController(mavlink) if config.MISSION_MODE == "FOLLOW" else None
         self._isr_active = False
         self._last_status_log_time = 0.0
+        self._last_logged_mode = None
+        self._last_logged_link_healthy = None
 
     def on_detection(self, detection) -> None:
         """Wire this into src.probes.register_detection_listener()."""
@@ -58,6 +66,15 @@ class Mission:
         """Call periodically (GLib.timeout_add) from the main thread.
         Returns True so a GLib timeout keeps repeating."""
         mode = self._mavlink.get_flight_mode()
+        link_healthy = self._mavlink.is_link_healthy()
+
+        if link_healthy != self._last_logged_link_healthy:
+            self._last_logged_link_healthy = link_healthy
+            print(f"[mavlink] {'heartbeat OK -- link connected' if link_healthy else 'heartbeat LOST -- link down'}")
+
+        if mode != self._last_logged_mode:
+            print(f"[mavlink] flight mode changed: {self._last_logged_mode or '(none)'} -> {mode or '(none)'}")
+            self._last_logged_mode = mode
 
         if config.MISSION_MODE == "FOLLOW" and self.follow is not None:
             should_run = mode == config.FOLLOW_TRIGGER_FLIGHT_MODE
