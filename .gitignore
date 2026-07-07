@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Model artifacts -- built/exported on-device, not portable across machines
+# (see CLAUDE.md "TensorRT engines are not portable"), so not committed
+*.engine
+*.onnx
+*.pt
+
+# One-off installer downloads (e.g. cuDSS local repo .deb)
+*.deb

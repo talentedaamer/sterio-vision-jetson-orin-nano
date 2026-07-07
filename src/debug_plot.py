@@ -86,16 +86,33 @@ class LiveXYZPlot:
         self._lock = threading.Lock()
         self._points: deque[Detection] = deque(maxlen=MAX_POINTS)
 
+        plt = None
+        fig = None
         try:
             plt = _import_plt()
             plt.ion()
+            fig = plt.figure("Detection XYZ (debug)")
+            ax = fig.add_subplot(111, projection="3d")
             self._plt = plt
-            self._fig = plt.figure("Detection XYZ (debug)")
-            self._ax = self._fig.add_subplot(111, projection="3d")
+            self._fig = fig
+            self._ax = ax
             self._label_axes()
             self._fig.show()
             self.enabled = True
         except Exception as exc:
+            # plt.figure() above can succeed and open a real window/GUI
+            # backend thread even when the LATER add_subplot(projection=
+            # "3d") call fails -- close it explicitly. An orphaned
+            # matplotlib window's GUI thread can keep the whole process
+            # alive after the detection pipeline itself has shut down,
+            # which then holds the camera open and blocks the next run
+            # (observed on-device: a stuck --debug process caused the
+            # following run to fail with Argus "AlreadyAllocated").
+            if fig is not None and plt is not None:
+                try:
+                    plt.close(fig)
+                except Exception:
+                    pass
             print(
                 f"[debug_plot] disabled -- matplotlib GUI backend unavailable "
                 f"({exc}). Needs a display attached to the Jetson and a "
