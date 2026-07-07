@@ -16,7 +16,21 @@ display attached to the Jetson (HDMI/DP) with a desktop session, plus a
 working interactive matplotlib backend (Tk/Qt/GTK) installed at the OS
 level. If neither is available, this degrades to a harmless no-op with a
 printed warning instead of crashing the detection pipeline.
+
+On a `--system-site-packages` venv, the OS may also have an old
+`python3-matplotlib` apt package installed. Its `mpl_toolkits` uses the
+legacy `pkg_resources.declare_namespace(...)` style (a real `__init__.py`),
+which always wins as a "regular package" over the venv's own newer,
+implicit-namespace-style `mpl_toolkits` -- regardless of sys.path order.
+The result is `mpl_toolkits.mplot3d` resolving to the ancient system
+version, which then fails importing internals (e.g. `matplotlib.docstring`)
+that don't exist in the venv's much newer matplotlib core. _import_plt()
+below works around this by hiding the system site-packages path from
+sys.path for the duration of the matplotlib import only, so the venv's own
+compatible copy is the only one Python can find -- gi/pyds (which DO need
+that system path) are untouched, since they're imported elsewhere.
 """
+import sys
 import threading
 from collections import deque
 
@@ -24,6 +38,24 @@ from .distance import Detection
 
 MAX_POINTS = 200
 CAMERA_COLORS = {0: "tab:blue", 1: "tab:red"}
+_SYSTEM_DIST_PACKAGES = "/usr/lib/python3/dist-packages"
+
+
+def _import_plt():
+    """Import matplotlib.pyplot (with a working Axes3D) while hiding the
+    system dist-packages path, so mpl_toolkits resolves to the venv's own
+    version-matched copy instead of an incompatible system one. See module
+    docstring."""
+    hidden = _SYSTEM_DIST_PACKAGES in sys.path
+    if hidden:
+        sys.path.remove(_SYSTEM_DIST_PACKAGES)
+    try:
+        import matplotlib.pyplot as plt
+        from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 -- force-resolve now, while hidden
+    finally:
+        if hidden and _SYSTEM_DIST_PACKAGES not in sys.path:
+            sys.path.append(_SYSTEM_DIST_PACKAGES)
+    return plt
 
 
 class LiveXYZPlot:
@@ -33,16 +65,10 @@ class LiveXYZPlot:
         self._points: deque[Detection] = deque(maxlen=MAX_POINTS)
 
         try:
-            import matplotlib.pyplot as plt
-
+            plt = _import_plt()
             plt.ion()
             self._plt = plt
             self._fig = plt.figure("Detection XYZ (debug)")
-            # add_subplot(projection="3d") auto-registers the 3D projection
-            # on modern matplotlib -- no `from mpl_toolkits.mplot3d import
-            # Axes3D` needed (that import path is what warns/breaks when a
-            # system + pip matplotlib are both on sys.path, as seen during
-            # export_engine.py runs on this device).
             self._ax = self._fig.add_subplot(111, projection="3d")
             self._label_axes()
             self._fig.show()

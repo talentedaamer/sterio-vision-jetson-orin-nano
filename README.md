@@ -272,3 +272,11 @@ in [CLAUDE.md](CLAUDE.md):
   version mismatch. `export_engine.py` strips it automatically.
 - **TensorRT engines aren't portable across machines** — must be exported
   directly on the target Jetson.
+- **`--debug`'s 3D plot needs a matplotlib workaround** — the OS ships an
+  old `python3-matplotlib` (3.5.1) whose `mpl_toolkits` uses the legacy
+  `pkg_resources` namespace style (a real `__init__.py`), which always
+  wins as a "regular package" over the venv's own newer `mpl_toolkits`,
+  regardless of `sys.path` order — breaking `Axes3D` with an
+  `ImportError: cannot import name 'docstring'`. `src/debug_plot.py`
+  works around it by hiding the system site-packages path from `sys.path`
+  only while importing matplotlib.
