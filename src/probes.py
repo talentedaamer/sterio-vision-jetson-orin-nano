@@ -11,9 +11,17 @@ point for wiring detections into MAVLink / geolocation telemetry later.
 Other code (e.g. the --debug 3D plot in src/debug_plot.py) can subscribe
 to every Detection via register_detection_listener() below, without
 touching this file.
+
+osd_sink_pad_status_probe() is a separate probe, attached to nvdsosd's
+SINK pad (after tiling, so there's exactly one composited frame to draw
+on) -- it draws a persistent one-line HUD (MAVLink link health, mission
+mode, live flight mode, follow state) via register_frame_status_provider(),
+visible in both the RTSP stream and the --debug local display. Optional:
+a no-op until something calls register_frame_status_provider() (see
+src/mission.py via main.py).
 """
 import time
-from typing import Callable
+from typing import Callable, Optional
 
 import gi
 
@@ -33,6 +41,17 @@ _LOG_INTERVAL_S = 0.5
 _last_log_time = 0.0
 
 _listeners: list[Callable[[Detection], None]] = []
+_frame_status_provider: Optional[Callable[[], Optional[str]]] = None
+
+
+def register_frame_status_provider(callback: Callable[[], Optional[str]]) -> None:
+    """Register a zero-argument callback returning the current HUD status
+    line (or None to show nothing), drawn on-screen every frame by
+    osd_sink_pad_status_probe(). Called on the streaming thread -- keep it
+    cheap (read cached state, no I/O). Only one provider at a time; the
+    last registration wins."""
+    global _frame_status_provider
+    _frame_status_provider = callback
 
 
 def register_detection_listener(callback: Callable[[Detection], None]) -> None:
@@ -137,5 +156,51 @@ def pgie_src_pad_buffer_probe(pad, info, u_data):
             l_frame = l_frame.next
         except StopIteration:
             break
+
+    return Gst.PadProbeReturn.OK
+
+
+def osd_sink_pad_status_probe(pad, info, u_data):
+    """Draws a persistent one-line HUD in the top-left corner of the
+    composited frame (MAVLink link health / mission mode / flight mode /
+    follow state), if register_frame_status_provider() has been called.
+    Attached to nvdsosd's SINK pad -- after tiling, so there's exactly one
+    composited frame per buffer to draw on (unlike pgie_src_pad_buffer_probe
+    above, which runs per-camera before tiling)."""
+    if _frame_status_provider is None:
+        return Gst.PadProbeReturn.OK
+
+    status_text = _frame_status_provider()
+    if not status_text:
+        return Gst.PadProbeReturn.OK
+
+    buf = info.get_buffer()
+    if not buf:
+        return Gst.PadProbeReturn.OK
+
+    batch_meta = pyds.gst_buffer_get_nvds_batch_meta(hash(buf))
+    if not batch_meta:
+        return Gst.PadProbeReturn.OK
+
+    l_frame = batch_meta.frame_meta_list
+    if l_frame is None:
+        return Gst.PadProbeReturn.OK
+    try:
+        frame_meta = pyds.NvDsFrameMeta.cast(l_frame.data)
+    except StopIteration:
+        return Gst.PadProbeReturn.OK
+
+    display_meta = pyds.nvds_acquire_display_meta_from_pool(batch_meta)
+    display_meta.num_labels = 1
+    text = display_meta.text_params[0]
+    text.display_text = status_text
+    text.x_offset = 10
+    text.y_offset = 10
+    text.font_params.font_name = "Sans"
+    text.font_params.font_size = 12
+    text.font_params.font_color.set(1.0, 1.0, 1.0, 1.0)
+    text.set_bg_clr = 1
+    text.text_bg_clr.set(0.0, 0.0, 0.0, 0.7)
+    pyds.nvds_add_display_meta_to_frame(frame_meta, display_meta)
 
     return Gst.PadProbeReturn.OK

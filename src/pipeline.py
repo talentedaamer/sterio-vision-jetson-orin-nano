@@ -28,7 +28,10 @@ encode" for the full story.
 
 A probe on nvinfer's src pad (before tiling, so per-source bbox coordinates
 are still meaningful) extracts detections, computes X/Y/Z, and sets the OSD
-label text -- see probes.py.
+label text -- see probes.py. A second probe on nvdsosd's SINK pad (after
+tiling, one composited frame per buffer) draws an optional one-line HUD
+status overlay (MAVLink/mission state) when main.py has registered one via
+probes.register_frame_status_provider() -- see probes.py.
 """
 import gi
 
@@ -37,7 +40,7 @@ gi.require_version("GstRtspServer", "1.0")
 from gi.repository import Gst, GstRtspServer
 
 from . import config
-from .probes import pgie_src_pad_buffer_probe
+from .probes import osd_sink_pad_status_probe, pgie_src_pad_buffer_probe
 
 
 def _make(factory: str, name: str) -> Gst.Element:
@@ -157,6 +160,9 @@ def build_pipeline(debug: bool = False) -> Gst.Pipeline:
 
     pgie_src_pad = pgie.get_static_pad("src")
     pgie_src_pad.add_probe(Gst.PadProbeType.BUFFER, pgie_src_pad_buffer_probe, None)
+
+    osd_sink_pad = osd.get_static_pad("sink")
+    osd_sink_pad.add_probe(Gst.PadProbeType.BUFFER, osd_sink_pad_status_probe, None)
 
     # --- RTSP branch (always on) ------------------------------------------------
     # nvjpegenc (NVJPG hardware engine) instead of nvv4l2h264enc (NVENC) --

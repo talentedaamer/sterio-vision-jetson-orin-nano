@@ -11,10 +11,20 @@ Neither mission ever triggers just because this process is running:
 update() must be driven periodically from the main thread (see main.py's
 GLib.timeout_add wiring), never from the GStreamer streaming thread that
 produces detections.
+
+status_text() is a one-line summary (MAVLink link health, mission mode,
+live flight mode, follow state) -- printed to the console periodically by
+update() below, and also wired (via main.py) into
+src.probes.register_frame_status_provider() to draw the same line as an
+on-screen HUD overlay on the video itself.
 """
+import time
+
 from . import config
 from .mavlink_link import MavlinkLink
 from .pid import ObjectFollowController
+
+_STATUS_LOG_INTERVAL_S = 1.0
 
 
 class Mission:
@@ -22,11 +32,27 @@ class Mission:
         self._mavlink = mavlink
         self.follow = ObjectFollowController(mavlink) if config.MISSION_MODE == "FOLLOW" else None
         self._isr_active = False
+        self._last_status_log_time = 0.0
 
     def on_detection(self, detection) -> None:
         """Wire this into src.probes.register_detection_listener()."""
         if self.follow is not None:
             self.follow.add_detection(detection)
+
+    def status_text(self) -> str:
+        """One-line status summary -- see module docstring."""
+        link_state = "CONNECTED" if self._mavlink.is_link_healthy() else "NO HEARTBEAT"
+        flight_mode = self._mavlink.get_flight_mode() or "UNKNOWN"
+        if self.follow is not None:
+            mission_state = "ACTIVE" if self.follow.active else "STANDBY"
+        elif config.MISSION_MODE == "ISR":
+            mission_state = "ACTIVE" if self._isr_active else "STANDBY"
+        else:
+            mission_state = "-"
+        return (
+            f"MAVLINK:{link_state}  MODE:{config.MISSION_MODE}  "
+            f"FC:{flight_mode}  MISSION:{mission_state}"
+        )
 
     def update(self) -> bool:
         """Call periodically (GLib.timeout_add) from the main thread.
@@ -44,6 +70,11 @@ class Mission:
 
         elif config.MISSION_MODE == "ISR":
             self._update_isr(mode)
+
+        now = time.monotonic()
+        if now - self._last_status_log_time >= _STATUS_LOG_INTERVAL_S:
+            self._last_status_log_time = now
+            print(f"[status] {self.status_text()}")
 
         return True
 

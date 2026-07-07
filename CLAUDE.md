@@ -225,7 +225,7 @@ pyproject.toml                             uv project + deps
 main.py                                    entry point, arg parsing, GLib mainloop, bus/error handling
 src/config.py                              all tunables (camera, model, classes, RTSP, tiler)
 src/pipeline.py                            GStreamer/DeepStream pipeline construction
-src/probes.py                              per-frame metadata probe: class filter, distance calc, OSD text; register_detection_listener() is the subscribe point for every Detection (full rate)
+src/probes.py                              per-frame metadata probe: class filter, distance calc, OSD text; register_detection_listener() is the subscribe point for every Detection (full rate); register_frame_status_provider() draws an on-screen HUD line (MAVLink/mission status)
 src/distance.py                            monocular X/Y/Z estimator (+ stereo placeholder)
 src/debug_plot.py                          --debug-only live 3D scatter plot of detection X/Y/Z (matplotlib); needs a display + GUI backend, same caveat as nveglglessink
 src/mavlink_link.py                        MavlinkLink: UART connection to the flight controller, IMU/GPS/compass telemetry getters, send_velocity_setpoint()
@@ -323,6 +323,16 @@ pipeline for anyone not using this.
   (`_update_isr()` checks `config.ISR_TRIGGER_FLIGHT_MODE` +
   `ISR_TRIGGER_ALTITUDE_M` and prints when triggered) but **CSV/JSON
   logging itself is not yet implemented** — next milestone.
+  `status_text()` returns a one-line summary (`MAVLINK:CONNECTED
+  MODE:FOLLOW FC:GUIDED MISSION:ACTIVE`) — `update()` prints it to the
+  console every `_STATUS_LOG_INTERVAL_S` (1s), and `main.py` also wires it
+  into `probes.register_frame_status_provider()`, which draws the same
+  line as a persistent on-screen HUD in the top-left corner of the video
+  (visible in both the RTSP stream and `--debug`'s local display) via a
+  second probe on `nvdsosd`'s sink pad (`osd_sink_pad_status_probe()` in
+  `src/probes.py` — runs after tiling, so there's exactly one composited
+  frame to draw the HUD on, unlike the per-object probe on `nvinfer`'s src
+  pad which runs before tiling).
 
 **Safety, read before ever touching `FOLLOW_DRY_RUN`:** this drives real
 vehicle motion and has not been validated against real flight hardware.
