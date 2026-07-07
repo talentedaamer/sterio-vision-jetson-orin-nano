@@ -14,6 +14,15 @@ debugging gotcha hit while bringing this up, and the reasoning behind each
 design decision), see [CLAUDE.md](CLAUDE.md). This README is the
 project-level overview; CLAUDE.md is the deep-dive.
 
+![Live dual-camera detection output](images/screenshot-1.png)
+
+*The tiled RTSP ground-station view: both IMX296 cameras side by side, each
+independently detecting the same person with a bounding box and the
+per-camera monocular X/Y/Z distance overlay (`person 0.89 | X:0.1 Y:-0.2
+Z:3.5m` on the left/cam0, `person 0.84 | X:-0.0 Y:-0.3 Z:3.5m` on the
+right/cam1) — this is exactly what `ffplay rtsp://<jetson-ip>:8554/ds-stereo`
+shows live.*
+
 ## Status: what's working today
 
 - ✅ Both IMX296 CSI cameras streaming live via `nvarguscamerasrc`
