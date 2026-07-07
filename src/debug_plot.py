@@ -51,7 +51,22 @@ def _import_plt():
     """Import matplotlib.pyplot (with a working Axes3D) while hiding every
     system "dist-packages" path, so mpl_toolkits resolves to the venv's own
     version-matched copy instead of an incompatible system one. See module
-    docstring."""
+    docstring.
+
+    Also drops any pre-existing sys.modules['mpl_toolkits'*] entry first --
+    on this device, something during Python's site-initialization (likely a
+    legacy .pth file triggering pkg_resources.declare_namespace() eagerly,
+    before any of our own code runs) caches mpl_toolkits pointed at the old
+    system copy *before* main() ever executes. Once a module is cached in
+    sys.modules, Python uses that cached object directly and never
+    re-consults sys.path -- so hiding paths alone did nothing; the stale
+    cache entry has to be evicted too, to force a genuine fresh resolution
+    against our (temporarily cleaned) sys.path.
+    """
+    for name in list(sys.modules):
+        if name == "mpl_toolkits" or name.startswith("mpl_toolkits."):
+            del sys.modules[name]
+
     hidden = [p for p in sys.path if "dist-packages" in p]
     for p in hidden:
         sys.path.remove(p)
