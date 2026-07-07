@@ -69,3 +69,45 @@ RTSP_JPEG_QUALITY = 80
 # Streammux
 # ---------------------------------------------------------------------------
 MUX_BATCHED_PUSH_TIMEOUT_US = 33000
+
+# ---------------------------------------------------------------------------
+# MAVLink -- flight controller telemetry + guided-mode command link
+# ---------------------------------------------------------------------------
+MAVLINK_DEVICE = "/dev/ttyTHS1"    # Jetson Orin Nano UART wired to the FC's telemetry port
+MAVLINK_BAUD = 57600               # must match that serial port's SERIALx_BAUD param on the FC
+MAVLINK_HEARTBEAT_TIMEOUT_S = 5.0  # link considered down if no HEARTBEAT for this long
+
+# ---------------------------------------------------------------------------
+# Mission mode -- gates FOLLOW / ISR behavior (see src/mission.py). Neither
+# mission ever starts just because this process is running: FOLLOW also
+# requires the flight controller to actually be in FOLLOW_TRIGGER_FLIGHT_MODE,
+# and ISR requires ISR_TRIGGER_FLIGHT_MODE + reaching ISR_TRIGGER_ALTITUDE_M.
+# ---------------------------------------------------------------------------
+# "NONE"   -- no MAVLink connection is even opened; camera/detection
+#             pipeline behaves exactly as before this feature existed.
+# "FOLLOW" -- PID-drive the drone to hold station on FOLLOW_TARGET_CLASS.
+# "ISR"    -- NOT YET IMPLEMENTED (next milestone). Will log detected-object
+#             + IMU + GPS data to CSV/JSON once triggered.
+MISSION_MODE = os.environ.get("MISSION_MODE", "NONE").upper()
+
+# --- FOLLOW ---
+FOLLOW_TARGET_CLASS = 0           # COCO id to follow -- 0 = person
+FOLLOW_TRIGGER_FLIGHT_MODE = "GUIDED"
+FOLLOW_TARGET_DISTANCE_M = 5.0    # standoff distance to hold from the target (Z axis)
+FOLLOW_MAX_VELOCITY_MPS = 1.5     # hard clamp on every axis -- keep conservative until flight-tested
+FOLLOW_UPDATE_INTERVAL_S = 0.2    # 5 Hz control loop; plenty for velocity setpoints
+# (kp, ki, kd) -- untuned starting points, NOT validated gains. Must be
+# tuned incrementally via real flight testing, see src/pid.py docstring.
+FOLLOW_PID_LATERAL = (0.6, 0.0, 0.15)    # drives X (lateral, m) -> vy (right)
+FOLLOW_PID_VERTICAL = (0.6, 0.0, 0.15)   # drives Y (vertical, m) -> vz (down)
+FOLLOW_PID_FORWARD = (0.4, 0.0, 0.1)     # drives (Z - target dist, m) -> vx (forward)
+# SAFETY: while True, setpoints are computed and logged but never sent to
+# the flight controller. Only set to False after validating telemetry
+# reads, sign conventions, and gains on the bench / in a supervised,
+# low-altitude tethered test.
+FOLLOW_DRY_RUN = os.environ.get("FOLLOW_DRY_RUN", "1") == "1"
+
+# --- ISR (not yet implemented) ---
+ISR_TRIGGER_FLIGHT_MODE = "AUTO"
+ISR_TRIGGER_ALTITUDE_M = 30.0
+ISR_LOG_FORMAT = "csv"  # or "json" -- see src/mission.py

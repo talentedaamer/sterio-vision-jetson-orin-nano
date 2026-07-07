@@ -67,8 +67,25 @@ def main() -> int:
         register_detection_listener(xyz_plot.add_point)
         GLib.timeout_add(200, xyz_plot.update)  # redraw at ~5Hz, main thread only
 
+    mavlink = None
+    if config.MISSION_MODE != "NONE":
+        # Lazy import -- pymavlink/serial connection only touched when a
+        # mission mode is actually configured, zero cost/impact otherwise.
+        from src.mavlink_link import MavlinkLink
+        from src.mission import Mission
+        from src.probes import register_detection_listener
+
+        mavlink = MavlinkLink()
+        mavlink.connect()
+        mission = Mission(mavlink)
+        register_detection_listener(mission.on_detection)
+        GLib.timeout_add(int(config.FOLLOW_UPDATE_INTERVAL_S * 1000), mission.update)
+        print(f"[main] mission mode: {config.MISSION_MODE} (dry_run={config.FOLLOW_DRY_RUN})")
+
     def shutdown(*_args):
         print("\n[main] shutting down")
+        if mavlink is not None:
+            mavlink.close()
         pipeline.send_event(Gst.Event.new_eos())
         loop.quit()
 

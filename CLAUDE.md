@@ -228,6 +228,9 @@ src/pipeline.py                            GStreamer/DeepStream pipeline constru
 src/probes.py                              per-frame metadata probe: class filter, distance calc, OSD text; register_detection_listener() is the subscribe point for every Detection (full rate)
 src/distance.py                            monocular X/Y/Z estimator (+ stereo placeholder)
 src/debug_plot.py                          --debug-only live 3D scatter plot of detection X/Y/Z (matplotlib); needs a display + GUI backend, same caveat as nveglglessink
+src/mavlink_link.py                        MavlinkLink: UART connection to the flight controller, IMU/GPS/compass telemetry getters, send_velocity_setpoint()
+src/pid.py                                 PIDController (generic) + ObjectFollowController (drone-follow control loop built on it) -- see "MAVLink / Mission" below
+src/mission.py                             Mission: gates FOLLOW/ISR behind config.MISSION_MODE + the FC's live flight mode; ISR is scaffolded, not yet implemented
 configs/pgie_yolov8n_config.txt            nvinfer config for the YOLOv8n engine
 configs/labels_coco.txt                    COCO-80 class names, index-matched to the engine's output
 nvdsinfer_custom_impl_yolov8/*.cpp/Makefile   custom bbox parser for the raw (no-NMS) YOLOv8 output head
@@ -285,20 +288,74 @@ ffplay rtsp://<jetson-ip>:8554/ds-stereo
 # or: gst-launch-1.0 rtspsrc location=rtsp://<jetson-ip>:8554/ds-stereo ! decodebin ! autovideosink
 ```
 
+## MAVLink / Mission (FOLLOW implemented, ISR scaffolded)
+
+Companion-computer link to the flight controller over UART
+(`config.MAVLINK_DEVICE = /dev/ttyTHS1`, requires `SERIALx_PROTOCOL=2` and
+a matching `SERIALx_BAUD` on that port). Entirely opt-in:
+`config.MISSION_MODE` defaults to `"NONE"`, in which case `main.py` never
+even opens the MAVLink connection — zero impact on the camera/detection
+pipeline for anyone not using this.
+
+- **`src/mavlink_link.py` — `MavlinkLink`**: opens the connection, runs a
+  background reader thread caching the latest `ATTITUDE`/`RAW_IMU`/
+  `VFR_HUD`/`GPS_RAW_INT`/`GLOBAL_POSITION_INT`/`HEARTBEAT` messages.
+  Three telemetry methods, matching the intended usage: `get_imu_telemetry()`
+  (IMU-only: roll/pitch/yaw, gyro rate, xyz accel, groundspeed, relative
+  altitude — never needs GPS), `get_gps_compass()` (position + compass
+  heading, only trust the fields when `.has_fix` is True), and
+  `get_telemetry()` (the main entry point: merges IMU + GPS/compass when a
+  fix is available, falls back to IMU-only otherwise). Also
+  `get_flight_mode()` (drives the mission gating below) and
+  `send_velocity_setpoint(vx, vy, vz)` (body-frame m/s via
+  `SET_POSITION_TARGET_LOCAL_NED`).
+- **`src/pid.py` — `PIDController` + `ObjectFollowController`**: a generic
+  clamped/anti-windup PID, and a follow controller that runs three of them
+  (lateral/vertical/forward) against a detection's camera-relative X/Y/Z to
+  hold `config.FOLLOW_TARGET_DISTANCE_M` from `config.FOLLOW_TARGET_CLASS`,
+  centered in frame.
+- **`src/mission.py` — `Mission`**: the gate. `on_detection()` feeds the
+  follow controller (wire into `probes.register_detection_listener()`);
+  `update()` (driven by `GLib.timeout_add` from `main.py`, main thread
+  only) starts/stops FOLLOW based on whether the flight controller is
+  *currently* in `config.FOLLOW_TRIGGER_FLIGHT_MODE` — the mission never
+  starts just because the process is running. ISR is scaffolded
+  (`_update_isr()` checks `config.ISR_TRIGGER_FLIGHT_MODE` +
+  `ISR_TRIGGER_ALTITUDE_M` and prints when triggered) but **CSV/JSON
+  logging itself is not yet implemented** — next milestone.
+
+**Safety, read before ever touching `FOLLOW_DRY_RUN`:** this drives real
+vehicle motion and has not been validated against real flight hardware.
+`config.FOLLOW_DRY_RUN` defaults to `True` — every setpoint is computed
+and logged (`[follow] DRY RUN setpoint ...`) but never sent to the flight
+controller. The gains in `config.FOLLOW_PID_*` and the axis sign
+conventions in `ObjectFollowController.update()` are documented starting
+points, not tuned/validated values. Before ever setting
+`FOLLOW_DRY_RUN=0`: validate telemetry reads first (safe, no motion
+involved), then bench-test with props off, then a supervised low-altitude
+tethered GUIDED-mode test — do not go straight to free flight.
+
+No object tracker exists yet (see below), so `ObjectFollowController` just
+follows the latest detection matching `FOLLOW_TARGET_CLASS` each cycle —
+with more than one matching object in frame, which one gets followed can
+change frame to frame.
+
 ## Known limitations / Next steps
 
 - **Distance estimation is monocular** (known-height + focal-length,
   per-camera, ported from the original prototype). `src/distance.py` has a
   stub `estimate_xyz_stereo()` — once both IMX296s are calibrated
   (intrinsics + baseline via `cv2.stereoCalibrate` or similar), replace the
-  call in `src/probes.py` with a disparity-based depth lookup.
+  call in `src/probes.py` with a disparity-based depth lookup. This also
+  directly limits FOLLOW's accuracy, since it holds station based on this
+  same monocular Z estimate.
 - **No object tracker yet** (no `nvtracker` in the pipeline) — detections
   aren't assigned persistent IDs across frames. Add `nvtracker` between
   `pgie` and `tiler` when ID persistence is needed (e.g. for stable
-  localization output).
-- **No MAVLink/geolocation hookup yet** — `on_detection()` in
-  `src/probes.py` is the single extension point; wire telemetry output
-  there when that milestone starts.
+  FOLLOW target selection or localization output).
+- **ISR mission mode is scaffolded but not implemented** — `Mission.
+  _update_isr()` detects the trigger condition (flight mode + altitude)
+  but does not yet log anything. Next milestone per project staging.
 - **Engine batch=1** (see export notes above) — revisit if fused-batch
   throughput becomes necessary once both cameras are running at full load.
 - RTSP branch currently sends **one composited (tiled) MJPEG stream**, not

@@ -35,8 +35,12 @@ shows live.*
   ground-station viewer
 - ✅ Optional local bench display for testing with a monitor attached
 - ✅ systemd unit for unattended boot-time startup
+- ✅ MAVLink telemetry link (IMU/GPS/compass) + PID-based object-follow
+  mission, gated behind config + live flight mode — **implemented but
+  untested against real flight hardware, defaults to a safe dry-run mode**,
+  see [MAVLink / Mission](#mavlink--mission)
 - ⏳ Not yet done: stereo calibration / disparity depth, object tracking
-  (persistent IDs), MAVLink/geolocation output — see
+  (persistent IDs), ISR data-logging mission mode — see
   [Roadmap](#roadmap--known-limitations)
 
 ## Hardware
@@ -151,6 +155,9 @@ directly on this Jetson whenever the model changes; see
 | [`src/probes.py`](src/probes.py) | The per-frame metadata probe: filters to target classes, computes distance per detection, sets on-screen label text. `register_detection_listener()` lets other code subscribe to every detection (full rate) without editing this file — used by `src/debug_plot.py` and the intended hook point for future MAVLink/telemetry output. |
 | [`src/distance.py`](src/distance.py) | Monocular X/Y/Z estimator (known object height + focal length), plus a placeholder for the future stereo-disparity estimator. |
 | [`src/debug_plot.py`](src/debug_plot.py) | `--debug`-only: live 3D scatter plot of detection X/Y/Z via matplotlib, colored by camera. Needs a display attached to the Jetson and a working GUI backend (Tk/Qt/GTK) — same physical requirement as the `nveglglessink` bench-display branch; degrades to a harmless no-op with a warning if unavailable. |
+| [`src/mavlink_link.py`](src/mavlink_link.py) | `MavlinkLink`: UART connection to the flight controller, background telemetry reader, IMU/GPS/compass getters, `send_velocity_setpoint()`. See [MAVLink / Mission](#mavlink--mission). |
+| [`src/pid.py`](src/pid.py) | `PIDController` (generic) + `ObjectFollowController` (the drone-follow control loop). |
+| [`src/mission.py`](src/mission.py) | `Mission`: gates FOLLOW/ISR behind `config.MISSION_MODE` + the flight controller's live flight mode. ISR is scaffolded, not yet implemented. |
 | [`configs/pgie_yolov8n_config.txt`](configs/pgie_yolov8n_config.txt) | `nvinfer` configuration for the YOLOv8n engine (batch size, NMS thresholds, custom parser wiring). |
 | [`configs/labels_coco.txt`](configs/labels_coco.txt) | COCO-80 class names, index-matched to the engine's output classes. |
 | [`nvdsinfer_custom_impl_yolov8/`](nvdsinfer_custom_impl_yolov8) | C++ custom bbox parser (`.cpp` + `Makefile`) for the engine's raw output head — must be compiled on-device. |
@@ -229,22 +236,58 @@ CPU-bound even in GPU OSD mode) — see
 [CLAUDE.md § GPU utilization model](CLAUDE.md) for the full breakdown and
 actual measured numbers from this device.
 
+## MAVLink / Mission
+
+A companion-computer link to the flight controller over UART
+(`/dev/ttyTHS1`), plus a PID-based mission that can make the drone follow
+a detected object. Entirely opt-in via `config.MISSION_MODE` (default
+`"NONE"` — `main.py` doesn't even open the MAVLink connection unless a
+mission mode is set).
+
+- **`MavlinkLink`** ([src/mavlink_link.py](src/mavlink_link.py)) — three
+  telemetry methods: `get_imu_telemetry()` (roll/pitch/yaw, gyro rate, xyz
+  acceleration, groundspeed, relative altitude — no GPS needed),
+  `get_gps_compass()` (position + compass heading, valid only when
+  `.has_fix`), and `get_telemetry()` (merges both when a GPS fix exists,
+  falls back to IMU-only otherwise — this is the main method to call).
+- **`PIDController` + `ObjectFollowController`** ([src/pid.py](src/pid.py))
+  — a generic PID and a follow controller running three of them to hold a
+  configured standoff distance from the target, centered in frame.
+- **`Mission`** ([src/mission.py](src/mission.py)) — the gate. FOLLOW only
+  runs while the flight controller reports
+  `config.FOLLOW_TRIGGER_FLIGHT_MODE` (default `GUIDED`); ISR is
+  scaffolded (detects its trigger condition) but data logging itself is
+  not yet implemented — that's the next milestone.
+
+> [!WARNING]
+> This drives real vehicle motion and **has not been validated against
+> real flight hardware**. `config.FOLLOW_DRY_RUN` defaults to `True` —
+> every setpoint is computed and logged, never sent to the flight
+> controller. The PID gains and axis sign conventions are documented
+> starting points, not tuned values. Before ever setting
+> `FOLLOW_DRY_RUN=0`: validate telemetry reads first, then bench-test with
+> props off, then a supervised low-altitude tethered test — never go
+> straight to free flight. Full detail in
+> [CLAUDE.md § MAVLink / Mission](CLAUDE.md).
+
 ## Roadmap / known limitations
 
 - **Distance is monocular**, not stereo — an interim known-height +
   focal-length estimate per camera, not yet using both cameras together.
   `src/distance.py` has a stub for a future disparity-based estimator once
   the two IMX296s are calibrated together (`cv2.stereoCalibrate` or
-  similar).
+  similar). This also limits FOLLOW's accuracy, since it holds station on
+  this same monocular Z estimate.
+- **ISR mission mode is scaffolded but not implemented** — `Mission.
+  _update_isr()` detects its trigger condition (flight mode + altitude)
+  but doesn't log anything yet. Next milestone.
 - **No object tracker** — detections don't have persistent IDs across
   frames yet (`nvtracker` isn't in the pipeline). Needed before reliable
-  multi-frame localization.
-- **No MAVLink/geolocation output yet** — `on_detection()` in
-  `src/probes.py` is the wired extension point; combining flight
-  controller attitude/GPS with a per-detection camera-relative X/Y/Z would
-  turn it into an absolute geolocated position. Needs flight controller
-  connection details (ArduPilot/PX4, link type, camera mounting offset) to
-  implement.
+  FOLLOW target selection with multiple similar objects in frame, or
+  stable multi-frame localization.
+- **FOLLOW is implemented but flight-untested** — see the warning above;
+  defaults to a dry-run mode that never sends commands to the flight
+  controller.
 - **Engine batch size is 1** — the exported engine doesn't use
   `dynamic=True`, so `nvinfer` runs one inference call per camera per
   cycle rather than a single fused batch-of-2 call. Both still run
