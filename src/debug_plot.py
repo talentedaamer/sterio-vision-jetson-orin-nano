@@ -25,10 +25,17 @@ implicit-namespace-style `mpl_toolkits` -- regardless of sys.path order.
 The result is `mpl_toolkits.mplot3d` resolving to the ancient system
 version, which then fails importing internals (e.g. `matplotlib.docstring`)
 that don't exist in the venv's much newer matplotlib core. _import_plt()
-below works around this by hiding the system site-packages path from
+below works around this by hiding every system "dist-packages" path from
 sys.path for the duration of the matplotlib import only, so the venv's own
 compatible copy is the only one Python can find -- gi/pyds (which DO need
-that system path) are untouched, since they're imported elsewhere.
+those system paths) are untouched, since they're imported elsewhere.
+
+Debian/Ubuntu ships matplotlib reachable through more than one such path
+(e.g. both `/usr/lib/python3/dist-packages` and the version-specific
+`/usr/lib/python3.10/dist-packages` -- confirmed present simultaneously on
+this device via `sys.path`), so hiding only one is not enough; every
+sys.path entry containing "dist-packages" is hidden, not one hardcoded
+path.
 """
 import sys
 import threading
@@ -38,23 +45,23 @@ from .distance import Detection
 
 MAX_POINTS = 200
 CAMERA_COLORS = {0: "tab:blue", 1: "tab:red"}
-_SYSTEM_DIST_PACKAGES = "/usr/lib/python3/dist-packages"
 
 
 def _import_plt():
-    """Import matplotlib.pyplot (with a working Axes3D) while hiding the
-    system dist-packages path, so mpl_toolkits resolves to the venv's own
+    """Import matplotlib.pyplot (with a working Axes3D) while hiding every
+    system "dist-packages" path, so mpl_toolkits resolves to the venv's own
     version-matched copy instead of an incompatible system one. See module
     docstring."""
-    hidden = _SYSTEM_DIST_PACKAGES in sys.path
-    if hidden:
-        sys.path.remove(_SYSTEM_DIST_PACKAGES)
+    hidden = [p for p in sys.path if "dist-packages" in p]
+    for p in hidden:
+        sys.path.remove(p)
     try:
         import matplotlib.pyplot as plt
         from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 -- force-resolve now, while hidden
     finally:
-        if hidden and _SYSTEM_DIST_PACKAGES not in sys.path:
-            sys.path.append(_SYSTEM_DIST_PACKAGES)
+        for p in hidden:
+            if p not in sys.path:
+                sys.path.append(p)
     return plt
 
 
