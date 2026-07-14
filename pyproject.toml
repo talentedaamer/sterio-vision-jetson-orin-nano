@@ -2,7 +2,16 @@
 name = "object-detection-win"
 version = "0.1.0"
 description = "DeepStream-based real-time YOLOv8n detection and monocular/stereo distance estimation for dual IMX296 CSI cameras on Jetson Orin NX"
-requires-python = ">=3.10"
+# Pinned to exactly 3.10.x, not ">=3.10": this project only ever runs on
+# the system Python 3.10 on this Jetson (ABI compatibility with gi/pyds,
+# see [tool.uv] below), and the pyds dependency's wheel only exists for
+# cp310/linux_aarch64. A looser bound makes `uv sync` try to resolve a
+# single lockfile valid for EVERY Python version + platform requires-python
+# would technically allow (e.g. Python 3.14 on Windows) and fail outright,
+# since pyds has no wheel there -- even though nothing runs this project
+# there. See also [tool.uv] environments below, which does the same for
+# the platform axis.
+requires-python = ">=3.10,<3.11"
 dependencies = [
     "onnx>=1.22.0",
     "torch==2.11.0",
@@ -24,6 +33,14 @@ dependencies = [
 # below), since that's the only interpreter ABI-compatible with the
 # apt-installed `gi`/PyGObject and DeepStream's `pyds` module.
 python-preference = "only-system"
+
+# Restricts uv's "universal" resolution to this one platform -- the
+# platform-axis counterpart to pinning requires-python above. Without
+# this, uv also tries to resolve for e.g. Windows/x86_64 (technically
+# allowed by requires-python alone, since that only constrains the Python
+# version) and fails the same way, since the pyds wheel is
+# linux_aarch64-only. Nothing about this project ever runs anywhere else.
+environments = ["sys_platform == 'linux' and platform_machine == 'aarch64'"]
 
 [[tool.uv.index]]
 # Jetson-native torch/torchvision builds (JetPack 6 / CUDA 12.6 / cp310 /
