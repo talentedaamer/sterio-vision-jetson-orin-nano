@@ -9,6 +9,7 @@ dependencies = [
     "torchvision==0.26.0",
     "ultralytics>=8.4.87",
     "pymavlink>=2.4.40",
+    "open3d>=0.18.0",
 ]
 
 [tool.uv]
@@ -113,3 +114,12 @@ torchvision = { index = "jetson-ai-lab" }
 #   TensorRT versions, free GPU memory, clear failure messages) around that
 #   unchanged call and copies the result into models/ for you:
 #       uv run python export_engine.py
+#
+# - `open3d` (--debug-only depth heatmap view, src/debug_depth_view.py) has
+#   NOT been verified on this device. Its official PyPI wheels have had
+#   inconsistent aarch64/Jetson coverage across versions -- if `uv sync`
+#   fails to find a compatible wheel or the import errors at runtime, that's
+#   a real possibility to check first (may need a different open3d version,
+#   or building from source), not necessarily a bug in debug_depth_view.py.
+#   Everything else in this project works fully without it if it can't be
+#   made to install -- it's only imported lazily inside `if args.debug:`.

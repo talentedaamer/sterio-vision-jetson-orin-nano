@@ -58,6 +58,15 @@ FOCAL_LENGTH_PX = 800.0   # calibrate per-camera; same lens assumed on both IMX2
 STEREO_BASELINE_M = 0.094   # 9.4cm
 
 # ---------------------------------------------------------------------------
+# Open3D depth "heatmap" view (--debug only) -- see src/debug_depth_view.py.
+# Colors each detected object by its existing monocular Z estimate (near =
+# hot/red, far = cool/blue). Fixed range, not the current buffer's min/max,
+# so colors stay comparable frame to frame.
+# ---------------------------------------------------------------------------
+DEPTH_VIEW_MIN_M = 0.5
+DEPTH_VIEW_MAX_M = 25.0
+
+# ---------------------------------------------------------------------------
 # Tiled composite output (both camera views side-by-side) + RTSP
 # ---------------------------------------------------------------------------
 TILER_ROWS = 1

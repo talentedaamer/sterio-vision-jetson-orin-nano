@@ -58,14 +58,19 @@ def main() -> int:
     bus.connect("message", bus_call, loop)
 
     if args.debug:
-        # Lazy import -- matplotlib is only touched in --debug mode, zero
-        # cost/impact on the normal headless + RTSP production path.
+        # Lazy import -- matplotlib/open3d are only touched in --debug mode,
+        # zero cost/impact on the normal headless + RTSP production path.
         from src.debug_plot import LiveXYZPlot
+        from src.debug_depth_view import LiveDepthView
         from src.probes import register_detection_listener
 
         xyz_plot = LiveXYZPlot()
         register_detection_listener(xyz_plot.add_point)
         GLib.timeout_add(200, xyz_plot.update)  # redraw at ~5Hz, main thread only
+
+        depth_view = LiveDepthView()
+        register_detection_listener(depth_view.add_point)
+        GLib.timeout_add(100, depth_view.update)  # ~10Hz, also handles mouse rotate/zoom responsiveness
 
     mavlink = None
     if config.MISSION_MODE != "NONE":

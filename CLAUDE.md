@@ -228,6 +228,7 @@ src/pipeline.py                            GStreamer/DeepStream pipeline constru
 src/probes.py                              per-frame metadata probe: class filter, distance calc, OSD text; register_detection_listener() is the subscribe point for every Detection (full rate); register_frame_status_provider() draws an on-screen HUD line (MAVLink/mission status)
 src/distance.py                            monocular X/Y/Z estimator (+ stereo placeholder)
 src/debug_plot.py                          --debug-only live 3D scatter plot of detection X/Y/Z (matplotlib); needs a display + GUI backend, same caveat as nveglglessink
+src/debug_depth_view.py                    --debug-only live Open3D point cloud of detection X/Y/Z colored by depth (heatmap); open3d aarch64/Jetson wheel availability unverified on this device
 src/mavlink_link.py                        MavlinkLink: UART connection to the flight controller, IMU/GPS/compass telemetry getters, send_velocity_setpoint()
 src/pid.py                                 PIDController (generic) + ObjectFollowController (drone-follow control loop built on it) -- see "MAVLink / Mission" below
 src/mission.py                             Mission: gates FOLLOW/ISR behind config.MISSION_MODE + the FC's live flight mode; ISR is scaffolded, not yet implemented
@@ -376,7 +377,11 @@ change frame to frame.
   (intrinsics + baseline via `cv2.stereoCalibrate` or similar), replace the
   call in `src/probes.py` with a disparity-based depth lookup. This also
   directly limits FOLLOW's accuracy, since it holds station based on this
-  same monocular Z estimate.
+  same monocular Z estimate. `config.STEREO_BASELINE_M` (0.094m, measured
+  lens-center-to-lens-center) is recorded for when that calibration
+  happens — a ruler measurement alone isn't sufficient for
+  `cv2.stereoCalibrate`-quality rectification (it doesn't capture
+  rotational misalignment or lens distortion between the two cameras).
 - **No object tracker yet** (no `nvtracker` in the pipeline) — detections
   aren't assigned persistent IDs across frames. Add `nvtracker` between
   `pgie` and `tiler` when ID persistence is needed (e.g. for stable
