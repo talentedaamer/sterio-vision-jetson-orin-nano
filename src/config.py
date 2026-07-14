@@ -48,6 +48,15 @@ KNOWN_HEIGHTS_M = {
 }
 FOCAL_LENGTH_PX = 800.0   # calibrate per-camera; same lens assumed on both IMX296s for now
 
+# Physical lens-center-to-lens-center distance between the two IMX296s,
+# measured directly (ruler/calipers) -- NOT a substitute for photographic
+# stereo calibration (cv2.stereoCalibrate), which still needs to happen
+# before estimate_xyz_stereo() in distance.py can be implemented: a ruler
+# measurement gives the baseline but not rotational misalignment between
+# the two cameras or lens distortion, both of which stereoCalibrate solves
+# for using checkerboard captures from this exact rig.
+STEREO_BASELINE_M = 0.094   # 9.4cm
+
 # ---------------------------------------------------------------------------
 # Tiled composite output (both camera views side-by-side) + RTSP
 # ---------------------------------------------------------------------------
