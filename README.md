@@ -123,8 +123,10 @@ nvarguscamerasrc(1) -/                                                     |
    This same probe is the extension point for future MAVLink/geolocation
    output (see [Roadmap](#roadmap--known-limitations)).
 5. **Composite view** — `nvmultistreamtiler` combines both camera views
-   into one side-by-side 1280x720 frame; `nvdsosd` draws the detection
-   boxes and labels onto it.
+   into one side-by-side frame, sized to keep each tile's aspect ratio
+   matching the camera's actual capture resolution (`config.TILER_SCALE`
+   controls output size, not aspect ratio — see `src/config.py`);
+   `nvdsosd` draws the detection boxes and labels onto it.
 6. **Output** — the composited, annotated video is always streamed out
    over RTSP (MJPEG) for a ground-station viewer, and detection results
    are always logged. A local display branch is added only in `--debug`

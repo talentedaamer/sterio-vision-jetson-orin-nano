@@ -165,9 +165,12 @@ nvarguscamerasrc(1) -/                                                     |
   are still per-camera) computes X/Y/Z per detection and sets the OSD label.
   This is also the **headless output path** — see `on_detection()` in
   `src/probes.py`, the extension point for MAVLink/geolocation telemetry.
-- The tiler composites both camera views into one 1280x720 side-by-side
-  frame and remaps object metadata (bbox + text) into tile coordinates
-  automatically, so OSD/RTSP show both cameras with correct overlays.
+- The tiler composites both camera views into one side-by-side frame
+  (`config.TILER_WIDTH/HEIGHT`, derived from `CAPTURE_WIDTH/HEIGHT` and
+  `TILER_SCALE` so each tile always keeps the camera's actual aspect
+  ratio — see `src/config.py`) and remaps object metadata (bbox + text)
+  into tile coordinates automatically, so OSD/RTSP show both cameras with
+  correct overlays.
 - RTSP (ground station) and headless detection output are **always active**.
   The local display branch (`nveglglessink`) is added **only** when
   `config.DEBUG` / `--debug` is set — that's the "bench testing" toggle.
@@ -414,7 +417,8 @@ change frame to frame.
 - RTSP branch currently sends **one composited (tiled) MJPEG stream**, not
   two independent per-camera streams — simplest for a ground station view;
   revisit if the ground station needs full-resolution per-camera feeds
-  instead of the 1280x720 tiled composite.
+  instead of the tiled composite (`config.TILER_SCALE`, default 0.5 —
+  half native resolution per tile, aspect-ratio-preserving).
 - **RTSP is MJPEG (`nvjpegenc`), not H.264** — this Orin Nano SOM has no
   hardware H.264 encoder (see "Hardware video encode" above). Uses more
   bandwidth than H.264 would have at the same quality; tune

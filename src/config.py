@@ -74,8 +74,19 @@ PLOT_DEPTH_MAX_M = 25.0
 # ---------------------------------------------------------------------------
 TILER_ROWS = 1
 TILER_COLS = 2
-TILER_WIDTH = 1456    # composite output width (both tiles combined)
-TILER_HEIGHT = 1088
+# Derived from CAPTURE_WIDTH/HEIGHT (not independent hardcoded numbers) so
+# each tile always keeps the camera's actual aspect ratio -- previously
+# TILER_WIDTH/HEIGHT were set independently (1456x1088 total = 728x1088 per
+# tile, vs. the source's actual 1456x1088/tile), squeezing every frame's
+# width down to roughly half without adjusting height, which is exactly
+# what produced the vertically-squeezed/stretched picture in --debug and
+# on RTSP. TILER_SCALE controls output size/bandwidth; it does NOT affect
+# aspect ratio, which is always preserved by construction.
+TILER_SCALE = 0.5
+TILER_TILE_WIDTH = int(CAPTURE_WIDTH * TILER_SCALE)
+TILER_TILE_HEIGHT = int(CAPTURE_HEIGHT * TILER_SCALE)
+TILER_WIDTH = TILER_TILE_WIDTH * TILER_COLS     # composite output width (both tiles combined)
+TILER_HEIGHT = TILER_TILE_HEIGHT * TILER_ROWS
 
 RTSP_PORT = 8554
 RTSP_MOUNT_POINT = "/ds-stereo"
