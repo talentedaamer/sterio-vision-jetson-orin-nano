@@ -77,7 +77,13 @@ shows live.*
 | torchvision | 0.26.0, same Jetson AI Lab index |
 | Ultralytics | ≥8.4.87 (export-only; not used by the runtime pipeline) |
 | ONNX | ≥1.22.0 (export-only) |
+| pymavlink | ≥2.4.40 (flight controller telemetry/command link, see [MAVLink / Mission](#mavlink--mission)) |
 | Package manager | [uv](https://docs.astral.sh/uv/) |
+
+See [CLAUDE.md § Python package dependencies](CLAUDE.md) for the full,
+kept-current table (exact resolved versions, aarch64/Jetson caveats per
+package, and what's been evaluated and rejected — e.g. Open3D) — update
+that table whenever a package is added via `uv`.
 
 Package management notes:
 - `torch`/`torchvision`/`ultralytics`/`onnx` are only needed to run
@@ -154,8 +160,7 @@ directly on this Jetson whenever the model changes; see
 | [`src/pipeline.py`](src/pipeline.py) | Builds and links the full GStreamer/DeepStream pipeline (cameras → mux → inference → tiler → OSD → RTSP/debug branches) and starts the RTSP server. |
 | [`src/probes.py`](src/probes.py) | The per-frame metadata probe: filters to target classes, computes distance per detection, sets on-screen label text. `register_detection_listener()` lets other code subscribe to every detection (full rate) without editing this file — used by `src/debug_plot.py` and `src/mission.py`. `register_frame_status_provider()` draws a one-line on-screen HUD (MAVLink/mission status) in both the RTSP stream and `--debug`'s local display. |
 | [`src/distance.py`](src/distance.py) | Monocular X/Y/Z estimator (known object height + focal length), plus a placeholder for the future stereo-disparity estimator. |
-| [`src/debug_plot.py`](src/debug_plot.py) | `--debug`-only: live 3D scatter plot of detection X/Y/Z via matplotlib, colored by camera. Needs a display attached to the Jetson and a working GUI backend (Tk/Qt/GTK) — same physical requirement as the `nveglglessink` bench-display branch; degrades to a harmless no-op with a warning if unavailable. |
-| [`src/debug_depth_view.py`](src/debug_depth_view.py) | `--debug`-only: live Open3D point cloud of detection X/Y/Z, colored by distance (heatmap: near=red, far=blue). Same data as `debug_plot.py`, different renderer. Open3D's aarch64/Jetson wheel support is unverified on this device — degrades to a no-op with a warning if it can't load. |
+| [`src/debug_plot.py`](src/debug_plot.py) | `--debug`-only: live 3D scatter plot of detection X/Y/Z via matplotlib, colored as a depth heatmap (near=red, far=blue) with marker shape indicating camera. Needs a display attached to the Jetson and a working GUI backend (Tk/Qt/GTK) — same physical requirement as the `nveglglessink` bench-display branch; degrades to a harmless no-op with a warning if unavailable. |
 | [`src/mavlink_link.py`](src/mavlink_link.py) | `MavlinkLink`: UART connection to the flight controller, background telemetry reader, IMU/GPS/compass getters, `send_velocity_setpoint()`. See [MAVLink / Mission](#mavlink--mission). |
 | [`src/pid.py`](src/pid.py) | `PIDController` (generic) + `ObjectFollowController` (the drone-follow control loop). |
 | [`src/mission.py`](src/mission.py) | `Mission`: gates FOLLOW/ISR behind `config.MISSION_MODE` + the flight controller's live flight mode. ISR is scaffolded, not yet implemented. |

@@ -1,6 +1,15 @@
 """Live 3D scatter plot of detection X/Y/Z coordinates -- debug/bench use
 only, activated by --debug alongside the local nveglglessink video branch.
 
+Points are colored as a depth "heatmap" (near=hot/red, far=cool/blue, fixed
+range config.PLOT_DEPTH_MIN_M/MAX_M so colors stay comparable frame to
+frame) via a colorbar-backed colormap; camera source is still visible
+through marker shape (circle=cam0, triangle=cam1). This used to be a
+separate Open3D point-cloud view (src/debug_depth_view.py) -- dropped, see
+CLAUDE.md "Python package dependencies": no Open3D wheel exists for
+Python 3.10 on Linux aarch64, so the same heat-coloring idea was folded in
+here instead, on a renderer already proven working on this device.
+
 Two threading notes that matter for correctness:
   - GStreamer pad probes (which produce Detections, see src/probes.py) run
     on a streaming thread, not the main thread. add_point() only appends to
@@ -41,10 +50,11 @@ import sys
 import threading
 from collections import deque
 
+from . import config
 from .distance import Detection
 
 MAX_POINTS = 200
-CAMERA_COLORS = {0: "tab:blue", 1: "tab:red"}
+CAMERA_MARKERS = {0: "o", 1: "^"}   # cam0=circle, cam1=triangle; color conveys depth instead
 
 
 def _import_plt():
@@ -90,12 +100,22 @@ class LiveXYZPlot:
         fig = None
         try:
             plt = _import_plt()
+            import matplotlib.cm as cm
+            from matplotlib.colors import Normalize
+
             plt.ion()
             fig = plt.figure("Detection XYZ (debug)")
             ax = fig.add_subplot(111, projection="3d")
             self._plt = plt
             self._fig = fig
             self._ax = ax
+            self._cmap = cm.get_cmap("jet")
+            self._norm = Normalize(vmin=config.PLOT_DEPTH_MIN_M, vmax=config.PLOT_DEPTH_MAX_M)
+            # Created once here, not in update() -- update() only clears
+            # self._ax (the 3D scatter axes) via cla(), which leaves this
+            # separate colorbar axes on the same figure untouched, so it
+            # doesn't get recreated/duplicated every redraw.
+            fig.colorbar(cm.ScalarMappable(norm=self._norm, cmap=self._cmap), ax=ax, label="Distance (m)", shrink=0.6)
             self._label_axes()
             self._fig.show()
             self.enabled = True
@@ -149,7 +169,7 @@ class LiveXYZPlot:
 
         self._ax.cla()
         self._label_axes()
-        for source_id, color in CAMERA_COLORS.items():
+        for source_id, marker in CAMERA_MARKERS.items():
             cam_points = [p for p in points if p.source_id == source_id]
             if not cam_points:
                 continue
@@ -157,9 +177,12 @@ class LiveXYZPlot:
                 [p.x_m for p in cam_points],
                 [p.z_m for p in cam_points],
                 [p.y_m for p in cam_points],
-                c=color,
+                c=[p.z_m for p in cam_points],
+                cmap=self._cmap,
+                norm=self._norm,
+                marker=marker,
                 label=f"cam{source_id}",
-                s=20,
+                s=25,
             )
 
         latest = points[-1]

@@ -43,6 +43,30 @@ Project deps (`pyproject.toml`) are managed with `uv`. `torch`/`torchvision`/
 `.pt -> .engine` export script — the DeepStream runtime app never imports
 them; it loads the prebuilt TensorRT engine directly through `gst-nvinfer`.
 
+### Python package dependencies (`pyproject.toml` — keep this table in sync)
+
+Whenever a package is added via `uv`, add it here too, with the version
+actually resolved on-device and any aarch64/Jetson-specific caveat —
+this table is the fast way to check compatibility before adding another
+one, instead of re-discovering the same class of problem from scratch.
+
+| Package | Version (resolved on-device) | Notes |
+|---|---|---|
+| `torch` | 2.11.0 | **Jetson-native build** from the [Jetson AI Lab index](https://pypi.jetson-ai-lab.io/jp6/cu126) (`[tool.uv.sources]` in `pyproject.toml`), NOT default PyPI — see "Model export" below for why |
+| `torchvision` | 0.26.0 | Same Jetson AI Lab index as `torch` |
+| `ultralytics` | ≥8.4.87 | Export-only, default PyPI, no aarch64 issues (pure Python + already-solved deps) |
+| `onnx` | ≥1.22.0 | Export-only, default PyPI, no aarch64 issues |
+| `pymavlink` | ≥2.4.40 | Default PyPI, pure Python + a small C extension — no aarch64/Jetson-specific issues encountered |
+| `matplotlib` | 3.10.9 (transitive, via `ultralytics`) | Works, but needed a runtime workaround for `mpl_toolkits`/`Axes3D` — see `src/debug_plot.py` and the "Notable gotchas" section below |
+| **`open3d` — evaluated, rejected** | — | **Do not re-add without reading this first.** Official Open3D on PyPI has never published a Linux aarch64 wheel for Python 3.10 (checked the full release history via PyPI's API — 0.16+ added cp310 but only for x86_64/macOS/Windows; earlier versions with `manylinux2014_aarch64` wheels topped out at Python 3.9). A third-party `open3d-unofficial-arm` wheel does exist for this exact platform/Python combo, and building from source is the officially-documented Jetson path — both were rejected as disproportionate for a debug-only visualization (unaudited binary vs. a 1-3+ hour build with known Jetson-specific build issues). The depth-heatmap feature was folded into the existing `src/debug_plot.py` (matplotlib) instead — see below. |
+
+Every package above other than the Jetson-native `torch`/`torchvision` pair
+resolves fine from default PyPI with no special handling — the aarch64
+wheel problems in this project have consistently been about *GPU/native
+binary* packages (torch, its transitive CUDA libs, the system-vs-pip
+matplotlib conflict), not pure-Python ones. Keep that pattern in mind
+before assuming a new package will be simple *or* assuming it won't.
+
 One-time environment setup (already-installed DeepStream SDK, not repeated
 here as install steps since it's present on-device):
 ```bash
@@ -227,8 +251,7 @@ src/config.py                              all tunables (camera, model, classes,
 src/pipeline.py                            GStreamer/DeepStream pipeline construction
 src/probes.py                              per-frame metadata probe: class filter, distance calc, OSD text; register_detection_listener() is the subscribe point for every Detection (full rate); register_frame_status_provider() draws an on-screen HUD line (MAVLink/mission status)
 src/distance.py                            monocular X/Y/Z estimator (+ stereo placeholder)
-src/debug_plot.py                          --debug-only live 3D scatter plot of detection X/Y/Z (matplotlib); needs a display + GUI backend, same caveat as nveglglessink
-src/debug_depth_view.py                    --debug-only live Open3D point cloud of detection X/Y/Z colored by depth (heatmap); open3d aarch64/Jetson wheel availability unverified on this device
+src/debug_plot.py                          --debug-only live 3D scatter plot of detection X/Y/Z (matplotlib), colored as a depth heatmap (near=red, far=blue), marker shape = camera; needs a display + GUI backend, same caveat as nveglglessink
 src/mavlink_link.py                        MavlinkLink: UART connection to the flight controller, IMU/GPS/compass telemetry getters, send_velocity_setpoint()
 src/pid.py                                 PIDController (generic) + ObjectFollowController (drone-follow control loop built on it) -- see "MAVLink / Mission" below
 src/mission.py                             Mission: gates FOLLOW/ISR behind config.MISSION_MODE + the FC's live flight mode; ISR is scaffolded, not yet implemented
