@@ -9,6 +9,13 @@ dependencies = [
     "torchvision==0.26.0",
     "ultralytics>=8.4.87",
     "pymavlink>=2.4.40",
+    # DeepStream Python bindings, direct wheel URL -- NOT on PyPI (see
+    # deepstream_python_apps v1.2.0 release, matches DS 7.1 + cp310 +
+    # aarch64). Declared here (not a manual `uv pip install <url>`) so
+    # `uv sync` installs AND KEEPS this instead of removing it as an
+    # untracked package every time -- that was happening before this was
+    # added, since uv sync makes the venv match exactly what's declared.
+    "pyds @ https://github.com/NVIDIA-AI-IOT/deepstream_python_apps/releases/download/v1.2.0/pyds-1.2.0-cp310-cp310-linux_aarch64.whl",
 ]
 
 [tool.uv]
@@ -61,10 +68,13 @@ torchvision = { index = "jetson-ai-lab" }
 #
 # - DeepStream's `pyds` module is NOT on PyPI, and DS 7.1's on-device install
 #   does NOT bundle the wheel either (confirmed: nothing under
-#   /opt/nvidia/deepstream matches pyds*). It's published separately on the
-#   deepstream_python_apps GitHub releases page. For DS 7.1 + Python 3.10 +
-#   Jetson (aarch64), install the matching prebuilt wheel directly:
-#       uv pip install https://github.com/NVIDIA-AI-IOT/deepstream_python_apps/releases/download/v1.2.0/pyds-1.2.0-cp310-cp310-linux_aarch64.whl
+#   /opt/nvidia/deepstream matches pyds*). It's declared above as a direct
+#   wheel URL from the deepstream_python_apps GitHub releases page (DS 7.1 +
+#   Python 3.10 + Jetson/aarch64) -- `uv sync` installs it like any other
+#   dependency now. Do NOT install it via a separate manual
+#   `uv pip install <url>` command instead of declaring it here: anything
+#   not declared in `dependencies` gets treated as untracked and REMOVED
+#   the next time `uv sync` runs (this happened once already).
 #   (source: https://github.com/NVIDIA-AI-IOT/deepstream_python_apps/releases/tag/v1.2.0 )
 #
 # - Sanity check before running main.py:

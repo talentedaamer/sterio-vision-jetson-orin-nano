@@ -57,6 +57,7 @@ one, instead of re-discovering the same class of problem from scratch.
 | `ultralytics` | ≥8.4.87 | Export-only, default PyPI, no aarch64 issues (pure Python + already-solved deps) |
 | `onnx` | ≥1.22.0 | Export-only, default PyPI, no aarch64 issues |
 | `pymavlink` | ≥2.4.40 | Default PyPI, pure Python + a small C extension — no aarch64/Jetson-specific issues encountered |
+| `pyds` | 1.2.0 | **Not on PyPI.** Declared as a direct wheel URL (`pyds @ https://...`) from the [deepstream_python_apps v1.2.0](https://github.com/NVIDIA-AI-IOT/deepstream_python_apps/releases/tag/v1.2.0) release, matching DS 7.1 + cp310 + aarch64. Must be declared this way, not installed via a separate manual `uv pip install <url>` — anything not in `dependencies` is untracked and gets removed by the next `uv sync` (happened once). |
 | `matplotlib` | 3.10.9 (transitive, via `ultralytics`) | Works, but needed a runtime workaround for `mpl_toolkits`/`Axes3D` — see `src/debug_plot.py` and the "Notable gotchas" section below |
 | **`open3d` — evaluated, rejected** | — | **Do not re-add without reading this first.** Official Open3D on PyPI has never published a Linux aarch64 wheel for Python 3.10 (checked the full release history via PyPI's API — 0.16+ added cp310 but only for x86_64/macOS/Windows; earlier versions with `manylinux2014_aarch64` wheels topped out at Python 3.9). A third-party `open3d-unofficial-arm` wheel does exist for this exact platform/Python combo, and building from source is the officially-documented Jetson path — both were rejected as disproportionate for a debug-only visualization (unaudited binary vs. a 1-3+ hour build with known Jetson-specific build issues). The depth-heatmap feature was folded into the existing `src/debug_plot.py` (matplotlib) instead — see below. |
 
@@ -79,13 +80,9 @@ rm -rf .venv
 # importable. Do NOT let uv pick its own downloaded interpreter (e.g. 3.12) --
 # extension modules built for system 3.10 won't load under a different ABI.
 uv venv --system-site-packages --python /usr/bin/python3.10
-uv sync
-
-# pyds is not on PyPI, and this DS 7.1 install doesn't bundle the wheel
-# on-device either -- it's published on the deepstream_python_apps GitHub
-# releases page (https://github.com/NVIDIA-AI-IOT/deepstream_python_apps/releases/tag/v1.2.0).
-# v1.2.0 = DeepStream 7.1; grab the cp310/aarch64 wheel for this Jetson:
-uv pip install https://github.com/NVIDIA-AI-IOT/deepstream_python_apps/releases/download/v1.2.0/pyds-1.2.0-cp310-cp310-linux_aarch64.whl
+uv sync   # also installs pyds -- declared as a direct wheel URL in pyproject.toml,
+          # NOT a separate manual `uv pip install` step (that gets removed by the
+          # next `uv sync` since it wouldn't be a declared dependency -- happened once)
 
 # Sanity check before running main.py:
 uv run python -c "import gi; gi.require_version('Gst','1.0'); \

@@ -177,10 +177,8 @@ directly on this Jetson whenever the model changes; see
 # venv must be the system Python 3.10, with access to OS-provided GStreamer
 # bindings (gi/PyGObject), since those aren't pip packages here
 uv venv --system-site-packages --python /usr/bin/python3.10
-uv sync
-
-# pyds isn't on PyPI or bundled with the DeepStream SDK install
-uv pip install https://github.com/NVIDIA-AI-IOT/deepstream_python_apps/releases/download/v1.2.0/pyds-1.2.0-cp310-cp310-linux_aarch64.whl
+uv sync   # also installs pyds (declared as a direct wheel URL in pyproject.toml,
+          # not on PyPI -- do not install it separately, see CLAUDE.md)
 
 # sanity checks
 uv run python -c "import gi; gi.require_version('Gst','1.0'); gi.require_version('GstRtspServer','1.0'); from gi.repository import Gst, GstRtspServer; import pyds; print('ok')"
