@@ -10,3 +10,5 @@ __pycache__/
 
 # One-off installer downloads (e.g. cuDSS local repo .deb)
 *.deb
+uv.lock
+nvdsinfer_custom_impl_yolov8/*.so
