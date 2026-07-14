@@ -18,6 +18,12 @@ dependencies = [
     "torchvision==0.26.0",
     "ultralytics>=8.4.87",
     "pymavlink>=2.4.40",
+    # Already installed transitively via ultralytics on this device (no new
+    # aarch64 risk, unlike open3d) -- declared explicitly now since
+    # src/calibration.py genuinely depends on it, not just incidentally
+    # available. Don't rely on a transitive dependency for something the
+    # project actually needs.
+    "opencv-python>=4.8.0",
     # DeepStream Python bindings, direct wheel URL -- NOT on PyPI (see
     # deepstream_python_apps v1.2.0 release, matches DS 7.1 + cp310 +
     # aarch64). Declared here (not a manual `uv pip install <url>`) so

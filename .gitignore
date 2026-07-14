@@ -12,3 +12,12 @@ __pycache__/
 *.deb
 uv.lock
 nvdsinfer_custom_impl_yolov8/*.so
+
+# Root-level stereo calibration output (~512KB) INCLUDING precomputed
+# undistort/rectify remap tables (map_left_1/2, map_right_1/2) -- those
+# maps are 100% derivable at runtime from configs/stereo_calibration.yaml
+# (the compact camera matrices/distortion/R1/R2/P1/P2, tracked in git) via
+# cv2.initUndistortRectifyMap(), see src/calibration.py. Only the compact
+# file is committed; this one stays wherever the calibration script wrote
+# it, not version-controlled.
+/stereo_calibration.yaml

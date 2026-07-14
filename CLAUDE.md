@@ -59,6 +59,7 @@ one, instead of re-discovering the same class of problem from scratch.
 | `pymavlink` | ≥2.4.40 | Default PyPI, pure Python + a small C extension — no aarch64/Jetson-specific issues encountered |
 | `pyds` | 1.2.0 | **Not on PyPI.** Declared as a direct wheel URL (`pyds @ https://...`) from the [deepstream_python_apps v1.2.0](https://github.com/NVIDIA-AI-IOT/deepstream_python_apps/releases/tag/v1.2.0) release, matching DS 7.1 + cp310 + aarch64. Must be declared this way, not installed via a separate manual `uv pip install <url>` — anything not in `dependencies` is untracked and gets removed by the next `uv sync` (happened once). Also: because this wheel is `cp310`/`linux_aarch64`-only, adding it as a real dependency broke `uv sync` outright once (`requires-python = ">=3.10"` alone lets uv's universal resolver try — and fail — to also solve for e.g. Python 3.14 on Windows, where no `pyds` wheel exists at all, even though nothing runs this project there). Fixed by pinning `requires-python = ">=3.10,<3.11"` and adding `[tool.uv] environments = ["sys_platform == 'linux' and platform_machine == 'aarch64'"]` — both narrow uv's resolution to what this project actually is. |
 | `matplotlib` | 3.10.9 (transitive, via `ultralytics`) | Works, but needed a runtime workaround for `mpl_toolkits`/`Axes3D` — see `src/debug_plot.py` and the "Notable gotchas" section below |
+| `opencv-python` | ≥4.8.0 | Already installed transitively via `ultralytics` (confirmed working on this device), now also declared explicitly since `src/calibration.py` genuinely depends on it — no new aarch64 risk |
 | **`open3d` — evaluated, rejected** | — | **Do not re-add without reading this first.** Official Open3D on PyPI has never published a Linux aarch64 wheel for Python 3.10 (checked the full release history via PyPI's API — 0.16+ added cp310 but only for x86_64/macOS/Windows; earlier versions with `manylinux2014_aarch64` wheels topped out at Python 3.9). A third-party `open3d-unofficial-arm` wheel does exist for this exact platform/Python combo, and building from source is the officially-documented Jetson path — both were rejected as disproportionate for a debug-only visualization (unaudited binary vs. a 1-3+ hour build with known Jetson-specific build issues). The depth-heatmap feature was folded into the existing `src/debug_plot.py` (matplotlib) instead — see below. |
 
 Every package above other than the Jetson-native `torch`/`torchvision` pair
@@ -251,12 +252,14 @@ src/config.py                              all tunables (camera, model, classes,
 src/pipeline.py                            GStreamer/DeepStream pipeline construction
 src/probes.py                              per-frame metadata probe: class filter, distance calc, OSD text; register_detection_listener() is the subscribe point for every Detection (full rate); register_frame_status_provider() draws an on-screen HUD line (MAVLink/mission status)
 src/distance.py                            monocular X/Y/Z estimator (+ stereo placeholder)
+src/calibration.py                         loads configs/stereo_calibration.yaml (cv2.FileStorage); StereoCalibration dataclass + lazy rectify_maps() -- see "Stereo calibration" below
 src/debug_plot.py                          --debug-only live 3D scatter plot of detection X/Y/Z (matplotlib), colored as a depth heatmap (near=red, far=blue), marker shape = camera; needs a display + GUI backend, same caveat as nveglglessink
 src/mavlink_link.py                        MavlinkLink: UART connection to the flight controller, IMU/GPS/compass telemetry getters, send_velocity_setpoint()
 src/pid.py                                 PIDController (generic) + ObjectFollowController (drone-follow control loop built on it) -- see "MAVLink / Mission" below
 src/mission.py                             Mission: gates FOLLOW/ISR behind config.MISSION_MODE + the FC's live flight mode; ISR is scaffolded, not yet implemented
 configs/pgie_yolov8n_config.txt            nvinfer config for the YOLOv8n engine
 configs/labels_coco.txt                    COCO-80 class names, index-matched to the engine's output
+configs/stereo_calibration.yaml            compact chessboard stereo calibration (cv2.stereoCalibrate/stereoRectify output, no baked-in remap tables) -- see "Stereo calibration" below
 nvdsinfer_custom_impl_yolov8/*.cpp/Makefile   custom bbox parser for the raw (no-NMS) YOLOv8 output head
 export_engine.py                           runs the (unchanged) .pt -> .engine export on-device with diagnostics, copies result into models/
 models/yolov8n.engine                      <- exported engine lives here (not committed)
@@ -311,6 +314,55 @@ View the ground-station stream from a laptop on the same network:
 ffplay rtsp://<jetson-ip>:8554/ds-stereo
 # or: gst-launch-1.0 rtspsrc location=rtsp://<jetson-ip>:8554/ds-stereo ! decodebin ! autovideosink
 ```
+
+## Stereo calibration (done — real chessboard data, not a ruler measurement)
+
+`configs/stereo_calibration.yaml` holds the output of a real chessboard
+stereo calibration (`cv2.stereoCalibrate` + `cv2.stereoRectify`) for this
+exact camera rig: both cameras' intrinsics (`camera_matrix_left/right`) +
+distortion (`dist_coeffs_left/right`), stereo extrinsics (`R`, `T`, `E`,
+`F`), rectification (`R1`, `R2`, `P1`, `P2`, `Q`), and:
+
+| Parameter | Value |
+|---|---|
+| Image size | 1456×1088 |
+| Chessboard | 8×5 squares, 30mm each |
+| Baseline | 0.094319m (94.3mm) — supersedes the earlier ruler measurement (0.094m) |
+| Focal length | 921.5871px (post-rectification, shared by both cameras via `P1`/`P2`) |
+| Stereo RMS reprojection error | 1.42px |
+
+`config.FOCAL_LENGTH_PX`/`STEREO_BASELINE_M` were updated to these values
+— this directly improves the existing monocular estimator in
+`src/distance.py` even before real stereo disparity is implemented, since
+it was previously using a rough 800.0px guess.
+
+**Only the compact parameters are committed**, not the full calibration
+output. The original file (wherever the calibration script wrote it, kept
+local, gitignored via `/stereo_calibration.yaml`) is ~512KB/739K lines
+because it also bakes in the precomputed undistort/rectify remap tables
+(`map_left_1/2`, `map_right_1/2`) — those are 100% derivable at runtime
+from the compact parameters via `cv2.initUndistortRectifyMap()`
+(`src/calibration.py`'s `StereoCalibration.rectify_maps()` does exactly
+this, lazily, cheap at ms-scale), so persisting ~500KB of precomputed
+lookup tables in git would be pure bloat with zero information gain.
+
+`src/calibration.py`'s `load()` reads the compact YAML via
+`cv2.FileStorage` (required for OpenCV's `!!opencv-matrix` YAML tags —
+plain `yaml.safe_load()` can't parse this format) and returns a
+`StereoCalibration` dataclass with every matrix above as a numpy array,
+ready for whatever consumes it next (real stereo disparity in
+`src/distance.py`, or an ORB-SLAM3 settings file). Nothing in the runtime
+pipeline (`main.py`) loads this yet — it's data + a loader, not wired into
+`src/probes.py` in this pass. `opencv-python` was added as an explicit
+dependency for this (it was already installed transitively via
+`ultralytics`, so no new aarch64 risk — see the package table above).
+
+This directly unblocks two roadmap items that were both waiting on it:
+real stereo depth (replacing monocular `estimate_xyz()` with a disparity-
+based `estimate_xyz_stereo()`), and step 1 of integrating ORB-SLAM3 or
+similar visual(-inertial) SLAM, which needs exactly this kind of
+calibration data for its stereo mode. Neither is built yet — see "Known
+limitations / Next steps" below for what's still required for each.
 
 ## MAVLink / Mission (FOLLOW implemented, ISR scaffolded)
 
@@ -394,17 +446,15 @@ change frame to frame.
 
 ## Known limitations / Next steps
 
-- **Distance estimation is monocular** (known-height + focal-length,
-  per-camera, ported from the original prototype). `src/distance.py` has a
-  stub `estimate_xyz_stereo()` — once both IMX296s are calibrated
-  (intrinsics + baseline via `cv2.stereoCalibrate` or similar), replace the
-  call in `src/probes.py` with a disparity-based depth lookup. This also
-  directly limits FOLLOW's accuracy, since it holds station based on this
-  same monocular Z estimate. `config.STEREO_BASELINE_M` (0.094m, measured
-  lens-center-to-lens-center) is recorded for when that calibration
-  happens — a ruler measurement alone isn't sufficient for
-  `cv2.stereoCalibrate`-quality rectification (it doesn't capture
-  rotational misalignment or lens distortion between the two cameras).
+- **Distance estimation is still monocular at runtime**, even though
+  stereo calibration is now done (see "Stereo calibration" above) —
+  `src/distance.py`'s `estimate_xyz_stereo()` stub isn't implemented yet,
+  `src/probes.py` still calls the known-height/focal-length `estimate_xyz()`.
+  Calibration was the prerequisite; the actual disparity computation
+  (rectify both frames via `src/calibration.py`'s maps, `cv2.StereoSGBM`
+  or similar, reproject via `Q`) is the remaining work. This also limits
+  FOLLOW's accuracy in the meantime, since it holds station on this same
+  monocular Z estimate.
 - **No object tracker yet** (no `nvtracker` in the pipeline) — detections
   aren't assigned persistent IDs across frames. Add `nvtracker` between
   `pgie` and `tiler` when ID persistence is needed (e.g. for stable

@@ -39,8 +39,13 @@ shows live.*
   mission, gated behind config + live flight mode — **implemented but
   untested against real flight hardware, defaults to a safe dry-run mode**,
   see [MAVLink / Mission](#mavlink--mission)
-- ⏳ Not yet done: stereo calibration / disparity depth, object tracking
-  (persistent IDs), ISR data-logging mission mode — see
+- ✅ Real chessboard stereo calibration done (`configs/stereo_calibration.yaml`,
+  `src/calibration.py`) — `config.FOCAL_LENGTH_PX`/`STEREO_BASELINE_M` now use
+  it, improving the existing monocular estimate. Full detail in
+  [CLAUDE.md § Stereo calibration](CLAUDE.md)
+- ⏳ Not yet done: real stereo disparity depth (calibration is done, the
+  disparity computation itself isn't), object tracking (persistent IDs),
+  ISR data-logging mission mode — see
   [Roadmap](#roadmap--known-limitations)
 
 ## Hardware
@@ -278,15 +283,15 @@ mission mode is set).
 
 ## Roadmap / known limitations
 
-- **Distance is monocular**, not stereo — an interim known-height +
-  focal-length estimate per camera, not yet using both cameras together.
-  `src/distance.py` has a stub for a future disparity-based estimator once
-  the two IMX296s are calibrated together (`cv2.stereoCalibrate` or
-  similar). This also limits FOLLOW's accuracy, since it holds station on
-  this same monocular Z estimate. `config.STEREO_BASELINE_M` (9.4cm,
-  measured) is recorded for that future calibration — it's not itself
-  sufficient for accurate rectification, which also needs to correct for
-  rotational misalignment and lens distortion between the two cameras.
+- **Distance is still monocular at runtime**, even though stereo
+  calibration is now done — `config.FOCAL_LENGTH_PX`/`STEREO_BASELINE_M`
+  were updated from real chessboard calibration data (see
+  [CLAUDE.md § Stereo calibration](CLAUDE.md)), improving the existing
+  known-height/focal-length estimate, but `src/distance.py`'s
+  `estimate_xyz_stereo()` stub isn't implemented yet — the actual
+  disparity computation is the remaining work. This also limits FOLLOW's
+  accuracy in the meantime, since it holds station on this same
+  monocular Z estimate.
 - **ISR mission mode is scaffolded but not implemented** — `Mission.
   _update_isr()` detects its trigger condition (flight mode + altitude)
   but doesn't log anything yet. Next milestone.

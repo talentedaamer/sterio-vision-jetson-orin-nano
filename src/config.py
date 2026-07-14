@@ -39,23 +39,23 @@ TARGET_CLASSES = {0, 2, 3}   # COCO ids: 0=person, 2=car, 3=motorcycle
 
 # ---------------------------------------------------------------------------
 # Monocular distance estimation (interim -- replaced by stereo disparity once
-# the two cameras are calibrated; see distance.py)
+# estimate_xyz_stereo() in distance.py is implemented; see src/calibration.py)
 # ---------------------------------------------------------------------------
 KNOWN_HEIGHTS_M = {
     0: 1.7,   # person
     2: 1.5,   # car
     3: 1.1,   # motorcycle
 }
-FOCAL_LENGTH_PX = 800.0   # calibrate per-camera; same lens assumed on both IMX296s for now
-
-# Physical lens-center-to-lens-center distance between the two IMX296s,
-# measured directly (ruler/calipers) -- NOT a substitute for photographic
-# stereo calibration (cv2.stereoCalibrate), which still needs to happen
-# before estimate_xyz_stereo() in distance.py can be implemented: a ruler
-# measurement gives the baseline but not rotational misalignment between
-# the two cameras or lens distortion, both of which stereoCalibrate solves
-# for using checkerboard captures from this exact rig.
-STEREO_BASELINE_M = 0.094   # 9.4cm
+# FOCAL_LENGTH_PX and STEREO_BASELINE_M below are from real chessboard
+# stereo calibration (cv2.stereoCalibrate + cv2.stereoRectify), not a
+# placeholder/ruler measurement anymore -- see configs/stereo_calibration.yaml
+# and src/calibration.py (the full loader: both cameras' intrinsics +
+# distortion, R/T/R1/R2/P1/P2/Q). Calibration RMS reprojection error:
+# 1.42px. This directly improves the existing monocular estimate below
+# even before stereo disparity is implemented, since it was previously
+# using a rough 800.0px guess.
+FOCAL_LENGTH_PX = 921.5871   # P1/P2's fx, post-rectification (both cameras share it)
+STEREO_BASELINE_M = 0.094319  # from calibration's T vector, not the earlier ruler measurement
 
 # ---------------------------------------------------------------------------
 # Depth "heatmap" coloring for the --debug 3D plot (src/debug_plot.py).
