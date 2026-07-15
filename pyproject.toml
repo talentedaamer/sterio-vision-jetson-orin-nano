@@ -1,7 +1,7 @@
 [project]
 name = "object-detection-win"
 version = "0.1.0"
-description = "DeepStream-based real-time YOLOv8n detection and monocular/stereo distance estimation for dual IMX296 CSI cameras on Jetson Orin NX"
+description = "DeepStream-based real-time YOLO26n detection and monocular/stereo distance estimation for dual IMX296 CSI cameras on Jetson Orin NX"
 # Pinned to exactly 3.10.x, not ">=3.10": this project only ever runs on
 # the system Python 3.10 on this Jetson (ABI compatibility with gi/pyds,
 # see [tool.uv] below), and the pyds dependency's wheel only exists for
@@ -138,7 +138,7 @@ torchvision = { index = "jetson-ai-lab" }
 # - TensorRT engines are locked to the exact TensorRT version + GPU
 #   architecture they were built on -- they are NOT portable across
 #   machines, even ones running the "same" TensorRT version number. If
-#   yolov8n.engine was exported anywhere other than this exact Jetson (or
+#   yolo26n.engine was exported anywhere other than this exact Jetson (or
 #   another Orin-family board on the same TensorRT 10.3.0.30), nvinfer will
 #   fail to deserialize it. Re-run the export directly on this device (same
 #   export call as always: format='engine', device='0', half=True,

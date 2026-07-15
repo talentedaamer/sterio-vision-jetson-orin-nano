@@ -25,16 +25,18 @@ FRAMERATE = 60
 SENSOR_MODE = -1     # -1 = let nvarguscamerasrc auto-select a mode matching the caps below
 
 # ---------------------------------------------------------------------------
-# Inference -- YOLOv8n TensorRT engine, exported via ultralytics
+# Inference -- YOLO26n TensorRT engine, exported via ultralytics (switched
+# from YOLOv8n -- YOLO26 is natively NMS-free/end-to-end, see
+# nvdsinfer_custom_impl_yolo26/ and CLAUDE.md "Model export")
 # ---------------------------------------------------------------------------
 # Exported with: model.export(format='engine', device='0', half=True, workspace=4)
 # No dynamic=True was used, so the engine's max batch size is fixed at 1.
-# nvinfer's `batch-size` (configs/pgie_yolov8n_config.txt) MUST stay 1 to
+# nvinfer's `batch-size` (configs/pgie_yolo26n_config.txt) MUST stay 1 to
 # match -- it will run one inference call per source per muxer batch rather
 # than a single fused batch=2 call. Still 100% GPU/TensorRT, just not fused.
 # Re-export with dynamic=True (batch=2) later if fused throughput matters.
-ENGINE_PATH = "models/yolov8n.engine"
-PGIE_CONFIG_PATH = "configs/pgie_yolov8n_config.txt"
+ENGINE_PATH = "models/yolo26n.engine"
+PGIE_CONFIG_PATH = "configs/pgie_yolo26n_config.txt"
 TARGET_CLASSES = {0, 2, 3}   # COCO ids: 0=person, 2=car, 3=motorcycle
 
 # ---------------------------------------------------------------------------

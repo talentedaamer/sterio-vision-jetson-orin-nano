@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
-"""Exports yolov8n.pt -> yolov8n.engine (TensorRT) on-device.
+"""Exports yolo26n.pt -> yolo26n.engine (TensorRT) on-device.
 
-The export call itself is unchanged from the original:
+The export call itself is unchanged from the original YOLOv8n version:
     model.export(format='engine', device='0', half=True, workspace=4)
+(YOLO26's end2end=True/NMS-free export is its default -- no extra flags
+needed for that; see CLAUDE.md "Model export".)
 
 This wrapper only adds diagnostics around it, since TensorRT engines are
 locked to the exact TensorRT version + GPU architecture they were built on
 -- they must be exported directly on this Jetson (see CLAUDE.md). Run with:
     uv run python export_engine.py
+
+yolo26n.pt isn't bundled with this repo and check_inputs() below requires
+it to already be present at the project root (same as yolov8n.pt was) --
+get it onto this device yourself first (e.g. `yolo26n = YOLO('yolo26n.pt')`
+in a throwaway script/REPL, which lets Ultralytics auto-download it, then
+move the resulting file here) before running this script.
 """
 import struct
 import sys
@@ -15,8 +23,8 @@ import time
 import traceback
 from pathlib import Path
 
-PT_PATH = Path("yolov8n.pt")
-ENGINE_DEST = Path("models/yolov8n.engine")
+PT_PATH = Path("yolo26n.pt")
+ENGINE_DEST = Path("models/yolo26n.engine")
 
 
 def _section(title: str) -> None:

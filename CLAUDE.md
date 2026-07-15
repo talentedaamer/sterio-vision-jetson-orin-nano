@@ -1,6 +1,6 @@
 # sterio-vision-jetson-orin-nano — Jetson Orin Nano Dual-Camera DeepStream Pipeline
 
-UAV payload: real-time YOLOv8n detection + monocular distance estimation over
+UAV payload: real-time YOLO26n detection + monocular distance estimation over
 dual IMX296 global-shutter CSI cameras, running 100% on GPU/dedicated hardware
 blocks via NVIDIA DeepStream. Stereo calibration and disparity-based depth,
 localization, and MAVLink telemetry are future milestones (see "Next Steps").
@@ -58,7 +58,7 @@ one, instead of re-discovering the same class of problem from scratch.
 | `onnx` | ≥1.22.0 | Export-only, default PyPI, no aarch64 issues |
 | `pymavlink` | ≥2.4.40 | Default PyPI, pure Python + a small C extension — no aarch64/Jetson-specific issues encountered |
 | `pyds` | 1.2.0 | **Not on PyPI.** Declared as a direct wheel URL (`pyds @ https://...`) from the [deepstream_python_apps v1.2.0](https://github.com/NVIDIA-AI-IOT/deepstream_python_apps/releases/tag/v1.2.0) release, matching DS 7.1 + cp310 + aarch64. Must be declared this way, not installed via a separate manual `uv pip install <url>` — anything not in `dependencies` is untracked and gets removed by the next `uv sync` (happened once). Also: because this wheel is `cp310`/`linux_aarch64`-only, adding it as a real dependency broke `uv sync` outright once (`requires-python = ">=3.10"` alone lets uv's universal resolver try — and fail — to also solve for e.g. Python 3.14 on Windows, where no `pyds` wheel exists at all, even though nothing runs this project there). Fixed by pinning `requires-python = ">=3.10,<3.11"` and adding `[tool.uv] environments = ["sys_platform == 'linux' and platform_machine == 'aarch64'"]` — both narrow uv's resolution to what this project actually is. |
-| `matplotlib` | 3.10.9 (transitive, via `ultralytics`) | Works, but needed a runtime workaround for `mpl_toolkits`/`Axes3D` — see `src/debug_plot.py` and the "Notable gotchas" section below |
+| `matplotlib` | 3.10.9 (transitive, via `ultralytics`) | Works, but needed a runtime workaround for `mpl_toolkits`/`Axes3D` — see `src/debug_plot.py` and README.md's "Notable gotchas" section |
 | `opencv-python` | ≥4.8.0 | Already installed transitively via `ultralytics` (confirmed working on this device), now also declared explicitly since `src/calibration.py` genuinely depends on it — no new aarch64 risk |
 | **`open3d` — evaluated, rejected** | — | **Do not re-add without reading this first.** Official Open3D on PyPI has never published a Linux aarch64 wheel for Python 3.10 (checked the full release history via PyPI's API — 0.16+ added cp310 but only for x86_64/macOS/Windows; earlier versions with `manylinux2014_aarch64` wheels topped out at Python 3.9). A third-party `open3d-unofficial-arm` wheel does exist for this exact platform/Python combo, and building from source is the officially-documented Jetson path — both were rejected as disproportionate for a debug-only visualization (unaudited binary vs. a 1-3+ hour build with known Jetson-specific build issues). The depth-heatmap feature was folded into the existing `src/debug_plot.py` (matplotlib) instead — see below. |
 
@@ -96,18 +96,27 @@ even if it built, would be a second ABI-mismatched copy shadowing the
 working system one. If the `GstRtspServer` import above fails, install the
 OS package instead: `sudo apt install gir1.2-gst-rtsp-server-1.0`.
 
-## Model export (existing, untouched)
+## Model export
+
+**Switched from YOLOv8n to YOLO26n** (Ultralytics, released January 2026)
+— YOLO26 is natively NMS-free (end-to-end one-to-one head), which changed
+the custom bbox parser and PGIE config; everything else in this project
+was unaffected. See README.md's "Notable gotchas" section for the
+before/after and why the swap was low-effort. `yolo26n.pt` isn't bundled
+with this repo — get
+it onto the device yourself (e.g. `YOLO('yolo26n.pt')` in a throwaway
+script lets Ultralytics auto-download it) before running the export.
 
 ```python
 from ultralytics import YOLO
-model = YOLO('yolov8n.pt')
+model = YOLO('yolo26n.pt')
 model.export(format='engine', device='0', half=True, workspace=4)
 ```
 
 Run via `uv run python export_engine.py` (project root) rather than typing
 this inline — same unchanged export call, wrapped with diagnostics (torch/
 CUDA/TensorRT versions, free GPU memory, clear failure messages) and it
-copies the result into `models/yolov8n.engine` for you. **Must be run
+copies the result into `models/yolo26n.engine` for you. **Must be run
 directly on this exact Jetson** — see the TensorRT portability note below.
 
 **Ultralytics' `.engine` files are not a bare TensorRT plan.** They're
@@ -122,25 +131,29 @@ genuine TensorRT version or GPU-architecture mismatch (this cost real
 debugging time before a hex dump of the file exposed it:
 `2707 0000 7b22 6465 7363 7269 7074 696f 6e22...` = length `0x727`, then
 `{"description"...`). `export_engine.py`'s `install_engine()` strips this
-header automatically before writing to `models/yolov8n.engine` — if you
+header automatically before writing to `models/yolo26n.engine` — if you
 ever export by hand instead of via that script, either use `YOLO(...)` to
 load it (which handles the wrapper) or strip it yourself:
 ```python
 import struct
-data = open("yolov8n.engine", "rb").read()
+data = open("yolo26n.engine", "rb").read()
 n = struct.unpack("<I", data[:4])[0]
-open("models/yolov8n.engine", "wb").write(data[4 + n:])
+open("models/yolo26n.engine", "wb").write(data[4 + n:])
 ```
 
 Consequences this project's DeepStream config is built around:
 - **FP16**, default **640x640** input, **COCO-80** classes.
-- No `nms=True`/`end2end` export flag → the engine's output head is raw:
-  shape `[1, 84, 8400]` (4 box channels + 80 class scores, sigmoid already
-  applied, no NMS baked in). This is why a **custom bbox parser**
-  (`nvdsinfer_custom_impl_yolov8/`) is required — DeepStream's built-in
-  detector parser can't decode this layout.
+- YOLO26's `end2end=True` export is its **default** (no extra export
+  flags needed) → the engine's output head is already final, post-NMS
+  detections: shape `[1, 300, 6]` (`[x1, y1, x2, y2, confidence,
+  class_id]` per row, up to 300 detections). This is why the **custom
+  bbox parser** (`nvdsinfer_custom_impl_yolo26/`) only applies a
+  confidence threshold — there's no decode or NMS left to do, unlike
+  YOLOv8's raw `[1, 84, 8400]` head this project used previously.
+  `cluster-mode=4` ("None") in the PGIE config is deliberate — nvinfer
+  must not re-cluster detections the model already finalized.
 - No `dynamic=True` → **the engine's max batch size is fixed at 1.**
-  `nvinfer`'s `batch-size` in `configs/pgie_yolov8n_config.txt` is therefore
+  `nvinfer`'s `batch-size` in `configs/pgie_yolo26n_config.txt` is therefore
   set to `1`, and it runs one inference call per camera per muxer cycle
   instead of one fused batch-of-2 call. Both calls still run entirely on
   TensorRT/GPU — this only affects *fusion*, not GPU-only-ness. If fused
@@ -151,7 +164,7 @@ Consequences this project's DeepStream config is built around:
 
 ```
 nvarguscamerasrc(0) -\
-                       >- nvstreammux -> queue -> nvinfer(YOLOv8n) -> nvmultistreamtiler
+                       >- nvstreammux -> queue -> nvinfer(YOLO26n) -> nvmultistreamtiler
 nvarguscamerasrc(1) -/                                                     |
                                                                             v
                                                 nvvideoconvert -> RGBA -> nvdsosd -> tee
@@ -213,7 +226,7 @@ and general video decode via NVDEC are both intact). Trade-offs:
 |---|---|
 | Camera capture (Argus/ISP) | Dedicated ISP, NVMM buffers, zero-copy |
 | `nvstreammux` batching | GPU/unified memory, no copy |
-| `nvinfer` (YOLOv8n) | TensorRT on GPU (CUDA cores) |
+| `nvinfer` (YOLO26n) | TensorRT on GPU (CUDA cores) |
 | `nvvideoconvert` (NV12↔RGBA↔I420, scale/tile) | VIC (dedicated video/image compositor block) by default on Jetson — deliberately **not** forced to `compute-hw=GPU`, so it runs in parallel with TensorRT instead of contending for CUDA cores |
 | `nvdsosd` box/line drawing | GPU (`process-mode=1`) |
 | `nvdsosd` **text** drawing (on-screen labels) | **CPU** — Pango/Cairo glyph rasterization; `process-mode` does not accelerate this in DeepStream's OSD plugin, this is a real, non-eliminable-while-keeping-readable-labels CPU cost |
@@ -257,12 +270,12 @@ src/debug_plot.py                          --debug-only live 3D scatter plot of 
 src/mavlink_link.py                        MavlinkLink: UART connection to the flight controller, IMU/GPS/compass telemetry getters, send_velocity_setpoint()
 src/pid.py                                 PIDController (generic) + ObjectFollowController (drone-follow control loop built on it) -- see "MAVLink / Mission" below
 src/mission.py                             Mission: gates FOLLOW/ISR behind config.MISSION_MODE + the FC's live flight mode; ISR is scaffolded, not yet implemented
-configs/pgie_yolov8n_config.txt            nvinfer config for the YOLOv8n engine
+configs/pgie_yolo26n_config.txt            nvinfer config for the YOLO26n engine
 configs/labels_coco.txt                    COCO-80 class names, index-matched to the engine's output
 configs/stereo_calibration.yaml            compact chessboard stereo calibration (cv2.stereoCalibrate/stereoRectify output, no baked-in remap tables) -- see "Stereo calibration" below
-nvdsinfer_custom_impl_yolov8/*.cpp/Makefile   custom bbox parser for the raw (no-NMS) YOLOv8 output head
+nvdsinfer_custom_impl_yolo26/*.cpp/Makefile   custom bbox parser for YOLO26's NMS-free (already-final) output head -- confidence-filter only, no decode/NMS
 export_engine.py                           runs the (unchanged) .pt -> .engine export on-device with diagnostics, copies result into models/
-models/yolov8n.engine                      <- exported engine lives here (not committed)
+models/yolo26n.engine                      <- exported engine lives here (not committed)
 ```
 
 ## Build & run (on the Jetson)
@@ -270,11 +283,11 @@ models/yolov8n.engine                      <- exported engine lives here (not co
 ```bash
 # 1. Export the engine directly on this device (TensorRT engines are not
 #    portable across machines -- see "Model export" above). Copies the
-#    result into models/yolov8n.engine automatically.
+#    result into models/yolo26n.engine automatically.
 uv run python export_engine.py
 
 # 2. Build the custom TensorRT-output parser (must be built on-device, aarch64)
-cd nvdsinfer_custom_impl_yolov8 && make && cd ..
+cd nvdsinfer_custom_impl_yolo26 && make && cd ..
 
 # 3. Run — headless + RTSP only (default, for flight)
 uv run main.py
@@ -305,7 +318,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now sterio-vision.service
 journalctl -u sterio-vision -f   # tail logs
 ```
-Re-run `export_engine.py` and the `nvdsinfer_custom_impl_yolov8` build
+Re-run `export_engine.py` and the `nvdsinfer_custom_impl_yolo26` build
 manually first if not already done — the service does not build/export
 anything itself, it only runs `main.py`.
 

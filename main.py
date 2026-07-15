@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Entry point for the dual-camera YOLOv8n DeepStream detection pipeline.
+"""Entry point for the dual-camera YOLO26n DeepStream detection pipeline.
 
 Usage:
     uv run main.py            # headless + RTSP out (default)

@@ -2,7 +2,7 @@
 
 Real-time dual-camera object detection and monocular distance estimation for
 a UAV payload, running on an NVIDIA Jetson Orin Nano via NVIDIA DeepStream.
-Detection uses a YOLOv8n TensorRT engine; all pixel- and tensor-heavy work
+Detection uses a YOLO26n TensorRT engine; all pixel- and tensor-heavy work
 (camera capture, inference, colorspace/scale conversion, on-screen box
 drawing, video encode) runs on the GPU or a dedicated hardware block, not
 the CPU. Stereo camera calibration, disparity-based depth, and flight
@@ -26,9 +26,9 @@ shows live.*
 ## Status: what's working today
 
 - ✅ Both IMX296 CSI cameras streaming live via `nvarguscamerasrc`
-- ✅ YOLOv8n TensorRT engine running inference on both streams via
-  DeepStream's `nvinfer`, with a custom bbox parser for the engine's raw
-  (no-NMS) output head
+- ✅ YOLO26n TensorRT engine running inference on both streams via
+  DeepStream's `nvinfer`, with a custom bbox parser for the engine's
+  already-NMS'd (end-to-end) output head
 - ✅ Per-detection monocular X/Y/Z distance estimate, overlaid on-screen and
   logged
 - ✅ Composited (tiled) dual-camera view streamed live over RTSP for a
@@ -104,7 +104,7 @@ Package management notes:
 
 ```
 nvarguscamerasrc(0) -\
-                       >- nvstreammux -> queue -> nvinfer(YOLOv8n) -> nvmultistreamtiler
+                       >- nvstreammux -> queue -> nvinfer(YOLO26n) -> nvmultistreamtiler
 nvarguscamerasrc(1) -/                                                     |
                                                                             v
                                                 nvvideoconvert -> RGBA -> nvdsosd -> tee
@@ -119,7 +119,7 @@ nvarguscamerasrc(1) -/                                                     |
    NV12 frames directly in NVMM (GPU-accessible) memory.
 2. **Batching** — `nvstreammux` combines both camera streams into one
    batch per cycle for the inference stage.
-3. **Inference** — `nvinfer` runs the YOLOv8n TensorRT engine on each
+3. **Inference** — `nvinfer` runs the YOLO26n TensorRT engine on each
    frame (see [Model](#model) below for why a custom bbox parser is
    needed).
 4. **Distance estimation** — a pad probe on `nvinfer`'s output (before
@@ -139,17 +139,22 @@ nvarguscamerasrc(1) -/                                                     |
 
 ### Model
 
-`models/yolov8n.engine` is a YOLOv8n TensorRT engine, exported via:
+`models/yolo26n.engine` is a YOLO26n TensorRT engine (switched from
+YOLOv8n — see "Notable gotchas" below), exported via:
 ```python
 from ultralytics import YOLO
-YOLO('yolov8n.pt').export(format='engine', device='0', half=True, workspace=4)
+YOLO('yolo26n.pt').export(format='engine', device='0', half=True, workspace=4)
 ```
-This is a raw (no built-in NMS) FP16 engine with a `[1, 84, 8400]` output
-head (4 box channels + 80 COCO class scores, sigmoid already applied).
-DeepStream's built-in detector parser can't decode this layout, so
-[`nvdsinfer_custom_impl_yolov8/`](nvdsinfer_custom_impl_yolov8) provides a
-custom one; NMS itself is handled by `nvinfer`'s own clustering
-(`cluster-mode=2` in [`configs/pgie_yolov8n_config.txt`](configs/pgie_yolov8n_config.txt)).
+YOLO26 is natively NMS-free (`end2end=True` is its default export mode):
+the output head is already final, post-NMS detections, shape `[1, 300, 6]`
+(`[x1, y1, x2, y2, confidence, class_id]` per row, up to 300 detections).
+DeepStream's built-in detector parser can't decode this layout either, so
+[`nvdsinfer_custom_impl_yolo26/`](nvdsinfer_custom_impl_yolo26) provides a
+custom one — it only applies a confidence threshold, no decode or NMS
+needed. `cluster-mode=4` ("None") in
+[`configs/pgie_yolo26n_config.txt`](configs/pgie_yolo26n_config.txt) is
+deliberate: nvinfer must not re-cluster detections the model already
+finalized.
 
 **TensorRT engines are hardware- and version-locked** — a `.engine` file
 built on one machine will not load on another unless the TensorRT version
@@ -171,11 +176,11 @@ directly on this Jetson whenever the model changes; see
 | [`src/mavlink_link.py`](src/mavlink_link.py) | `MavlinkLink`: UART connection to the flight controller, background telemetry reader, IMU/GPS/compass getters, `send_velocity_setpoint()`. See [MAVLink / Mission](#mavlink--mission). |
 | [`src/pid.py`](src/pid.py) | `PIDController` (generic) + `ObjectFollowController` (the drone-follow control loop). |
 | [`src/mission.py`](src/mission.py) | `Mission`: gates FOLLOW/ISR behind `config.MISSION_MODE` + the flight controller's live flight mode. ISR is scaffolded, not yet implemented. |
-| [`configs/pgie_yolov8n_config.txt`](configs/pgie_yolov8n_config.txt) | `nvinfer` configuration for the YOLOv8n engine (batch size, NMS thresholds, custom parser wiring). |
+| [`configs/pgie_yolo26n_config.txt`](configs/pgie_yolo26n_config.txt) | `nvinfer` configuration for the YOLO26n engine (batch size, confidence threshold, custom parser wiring, `cluster-mode=4` since the model's output is already NMS'd). |
 | [`configs/labels_coco.txt`](configs/labels_coco.txt) | COCO-80 class names, index-matched to the engine's output classes. |
-| [`nvdsinfer_custom_impl_yolov8/`](nvdsinfer_custom_impl_yolov8) | C++ custom bbox parser (`.cpp` + `Makefile`) for the engine's raw output head — must be compiled on-device. |
+| [`nvdsinfer_custom_impl_yolo26/`](nvdsinfer_custom_impl_yolo26) | C++ custom bbox parser (`.cpp` + `Makefile`) for the engine's already-final (NMS-free/end-to-end) output head — must be compiled on-device. |
 | [`deploy/sterio-vision.service`](deploy/sterio-vision.service) | systemd unit for unattended startup on boot. |
-| `models/yolov8n.engine` | The exported TensorRT engine (not committed — built per-device, see below). |
+| `models/yolo26n.engine` | The exported TensorRT engine (not committed — built per-device, see below). |
 | [`pyproject.toml`](pyproject.toml) | `uv`-managed project dependencies and environment notes. |
 
 ## Setup (one-time, on the Jetson)
@@ -205,7 +210,7 @@ with the Jetson-native PyTorch build.
 uv run python export_engine.py
 
 # 2. Build the custom bbox parser (must be compiled on-device, aarch64)
-cd nvdsinfer_custom_impl_yolov8 && make && cd ..
+cd nvdsinfer_custom_impl_yolo26 && make && cd ..
 
 # 3. Run headless + RTSP (default — for actual flight)
 uv run main.py
@@ -321,6 +326,15 @@ mission mode is set).
 Kept here briefly for quick reference; full detail and exact commands are
 in [CLAUDE.md](CLAUDE.md):
 
+- **Switching YOLOv8n → YOLO26n was low-effort, contained to two files** —
+  YOLO26 (Ultralytics, Jan 2026) is natively NMS-free: exported output is
+  already-final detections `[1, 300, 6]` (`x1,y1,x2,y2,confidence,
+  class_id]`), not YOLOv8's raw `[1, 84, 8400]` needing decode + NMS. The
+  custom bbox parser got *simpler* (confidence-filter only, no per-anchor
+  argmax loop), `cluster-mode` changed `2` → `4` ("None" — don't
+  re-cluster already-final detections), and the export/pipeline/probe
+  code needed zero changes since they all consume the same
+  `NvDsObjectMeta` structure regardless of which model produced it.
 - **`nvv4l2h264enc` doesn't exist on this board** — it's an Orin Nano, not
   Orin NX as originally assumed; Orin Nano has no hardware video encoder.
   Fixed by using `nvjpegenc` (hardware JPEG via the NVJPG engine) instead.

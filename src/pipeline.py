@@ -1,4 +1,4 @@
-"""Builds and wires the DeepStream GStreamer pipeline for dual-camera YOLOv8n
+"""Builds and wires the DeepStream GStreamer pipeline for dual-camera YOLO26n
 inference + on-screen distance overlay + RTSP output (+ optional local
 bench-test display).
 
@@ -8,7 +8,7 @@ Model" for exactly which engine does what and where the few unavoidable
 CPU-touching bytes are):
 
     nvarguscamerasrc(0) -\
-                           >- nvstreammux -> queue -> nvinfer(YOLOv8n) -> nvmultistreamtiler
+                           >- nvstreammux -> queue -> nvinfer(YOLO26n) -> nvmultistreamtiler
     nvarguscamerasrc(1) -/                                                     |
                                                                                 v
                                                      nvvideoconvert -> capsfilter(RGBA) -> nvdsosd -> tee
@@ -115,7 +115,7 @@ def start_rtsp_server() -> GstRtspServer.RTSPServer:
 
 
 def build_pipeline(debug: bool = False) -> Gst.Pipeline:
-    pipeline = Gst.Pipeline.new("dual-cam-yolov8n-stereo")
+    pipeline = Gst.Pipeline.new("dual-cam-yolo26n-stereo")
 
     # --- sources -> streammux -------------------------------------------------
     streammux = _make("nvstreammux", "streammux")

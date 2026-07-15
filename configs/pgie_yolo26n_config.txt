@@ -1,0 +1,52 @@
+# PGIE (primary inference engine) config for the Ultralytics-exported
+# YOLO26n TensorRT engine.
+#
+# Paths below are resolved relative to THIS FILE's directory by gst-nvinfer.
+# Place the exported engine at ../models/yolo26n.engine (see CLAUDE.md).
+#
+# The engine was exported with:
+#   model.export(format='engine', device='0', half=True, workspace=4)
+# -> static batch size 1, FP16, default 640x640 input. YOLO26 is natively
+#    NMS-free (end2end=True is its default export mode) -- the output head
+#    already produces final, post-NMS detections shaped [1, 300, 6]
+#    ([x1, y1, x2, y2, confidence, class_id] per row), unlike YOLOv8's raw
+#    [1, 84, 8400] head this project used previously. cluster-mode=4
+#    ("None") below is deliberate: nvinfer must NOT re-cluster/re-NMS
+#    detections the model already finalized.
+
+[property]
+gpu-id=0
+net-scale-factor=0.0039215697906911373
+model-color-format=0
+model-engine-file=../models/yolo26n.engine
+labelfile-path=labels_coco.txt
+
+# Engine has a fixed max batch size of 1 (export did not use dynamic=True).
+# nvinfer will run one inference call per source per muxer batch instead of
+# a single fused batch=2 call. Still fully GPU/TensorRT — just not fused.
+# Re-export with dynamic=True + batch=2 later to remove this limitation.
+batch-size=1
+
+process-mode=1
+network-mode=2
+num-detected-classes=80
+interval=0
+gie-unique-id=1
+network-type=0
+
+# YOLO training/export preprocessing letterboxes (pads) to preserve aspect
+# ratio rather than stretching -- match that here so decoded boxes align.
+maintain-aspect-ratio=1
+symmetric-padding=1
+
+# "None" -- the parser's output is already final, post-NMS detections;
+# clustering (NMS) here would incorrectly re-process them.
+cluster-mode=4
+parse-bbox-func-name=NvDsInferParseCustomYolo26
+custom-lib-path=../nvdsinfer_custom_impl_yolo26/libnvdsinfer_custom_impl_Yolo.so
+
+[class-attrs-all]
+# Repurposed as the confidence filter threshold the parser applies
+# directly (see nvdsinfer_yolo26_parser.cpp) -- no nms-iou-threshold/topk
+# here, since there's no clustering step left to configure.
+pre-cluster-threshold=0.25
