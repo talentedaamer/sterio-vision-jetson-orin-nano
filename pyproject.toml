@@ -24,6 +24,23 @@ dependencies = [
     # available. Don't rely on a transitive dependency for something the
     # project actually needs.
     "opencv-python>=4.8.0",
+    # For src/geolocation.py's camera->body->NED rotation chain. Mainstream
+    # scientific-Python package with long-standing manylinux aarch64
+    # wheels (unlike open3d) -- low risk, but genuinely UNVERIFIED on this
+    # exact device since it's new with the geolocation feature; run
+    # `uv sync` and confirm before trusting.
+    "scipy>=1.11",
+    # For src/geolocation.py's NED->geodetic (lat/lon/alt) step. Pure
+    # Python, numpy-only, no compiled extensions -- zero platform-specific
+    # wheel risk (unlike scipy/opencv), works identically on any
+    # Python 3.10 install. Also new/unverified on this device, but the
+    # "unverified" risk here is essentially nil given it's pure Python.
+    "pymap3d>=3.0",
+    # For configs/camera_body_extrinsics.yaml (src/extrinsics.py). Almost
+    # certainly already present transitively (ultralytics uses YAML config
+    # files internally) but declared explicitly now since extrinsics.py
+    # genuinely depends on it, same reasoning as opencv-python above.
+    "pyyaml>=6.0",
     # DeepStream Python bindings, direct wheel URL -- NOT on PyPI (see
     # deepstream_python_apps v1.2.0 release, matches DS 7.1 + cp310 +
     # aarch64). Declared here (not a manual `uv pip install <url>`) so

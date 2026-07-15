@@ -1,10 +1,15 @@
-"""Monocular distance estimation from a known object height + bbox pixel height.
+"""Distance estimation: monocular (default, always-on) and stereo
+(on-demand, real disparity -- see estimate_xyz_stereo() and
+src/stereo_depth.py).
 
-This is the interim depth estimator for the initial dual-camera streaming
-milestone. Now that the two IMX296 cameras are calibrated (see
-src/calibration.py), add a disparity-based estimator and switch the call
-site in probes.py over to it -- estimate_xyz()'s signature is the only
-contract the rest of the pipeline depends on.
+estimate_xyz() (monocular, from a known object height + bbox pixel height)
+remains the always-on estimator feeding src/probes.py's per-frame overlay,
+FOLLOW, and the debug plot -- cheap, no raw pixel access needed, and
+accurate enough for those uses. estimate_xyz_stereo() is real disparity-
+based depth, but requires rectified pixel data from BOTH cameras (see
+src/stereo_depth.py) and is comparatively expensive, so callers invoke it
+on demand for one detection at a time (e.g. src/geolocation.py) rather
+than every detection every frame.
 """
 import time
 from collections import deque
@@ -45,12 +50,29 @@ def estimate_xyz(class_id: int, left: float, top: float, width: float, height: f
     return x, y, z
 
 
-def estimate_xyz_stereo(*_args, **_kwargs) -> tuple[float, float, float]:
-    """Placeholder for post-calibration stereo disparity depth."""
-    raise NotImplementedError(
-        "Stereo depth requires camera calibration (intrinsics + baseline). "
-        "estimate_xyz() (monocular) is used until calibration is done."
-    )
+def estimate_xyz_stereo(left: float, top: float, width: float, height: float,
+                         disparity_px: float, cx: float, cy: float,
+                         focal_length_px: float, baseline_m: float) -> tuple[float, float, float]:
+    """X/Y/Z in meters, camera-relative, from a rectified disparity value
+    (see src/stereo_depth.py for how disparity_px is obtained -- this
+    function is pure math, no image processing).
+
+    Unlike estimate_xyz() (monocular), the bbox here must already be in
+    RECTIFIED image coordinates (src/stereo_depth.py's rectify_bbox_left()),
+    and cx/cy/focal_length_px must be the RECTIFIED principal point/focal
+    length (P1[0,2], P1[1,2], P1[0,0] from src/calibration.py's
+    StereoCalibration), not the raw frame center/config.FOCAL_LENGTH_PX --
+    rectification can shift the principal point away from the image center.
+    """
+    if disparity_px <= 0:
+        raise ValueError("disparity_px must be positive for a valid stereo depth estimate")
+
+    z = (focal_length_px * baseline_m) / disparity_px
+    u = left + width / 2.0
+    v = top + height / 2.0
+    x = (u - cx) * z / focal_length_px
+    y = (v - cy) * z / focal_length_px
+    return x, y, z
 
 
 class SmoothedDetection:

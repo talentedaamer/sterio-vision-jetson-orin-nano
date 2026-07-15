@@ -59,6 +59,24 @@ KNOWN_HEIGHTS_M = {
 FOCAL_LENGTH_PX = 921.5871   # P1/P2's fx, post-rectification (both cameras share it)
 STEREO_BASELINE_M = 0.094319  # from calibration's T vector, not the earlier ruler measurement
 
+# ---------------------------------------------------------------------------
+# Real stereo depth (src/stereo_depth.py, src/distance.py estimate_xyz_stereo)
+# -- ROI-based disparity around a single detection's bbox, NOT a full-frame
+# dense disparity map (far too expensive on this ARM CPU at full resolution/
+# framerate; see src/stereo_depth.py docstring). UNVERIFIED on real
+# hardware -- this is genuine CPU work this project has otherwise avoided,
+# so it is NOT wired into the always-on per-frame probe by default; it's
+# called on demand (e.g. from src/geolocation.py) for one detection at a
+# time. Tune STEREO_MAX_DISPARITY_PX down (must stay a multiple of 16) if
+# it costs too much CPU per call once measured on-device.
+# ---------------------------------------------------------------------------
+# max_disparity = focal_length_px * baseline_m / min_expected_depth_m.
+# 192px -> ~0.45m minimum depth at the calibrated focal length/baseline
+# above; closer objects than that will fail to find a valid disparity and
+# fall back to the monocular estimate (see estimate_xyz_stereo's caller).
+STEREO_MAX_DISPARITY_PX = 192
+STEREO_BLOCK_SIZE = 7
+
 # On-screen X/Y/Z label smoothing (src/distance.py SmoothedDetection) --
 # presentational only, does NOT affect FOLLOW/debug-plot, which still use
 # the raw per-frame estimate directly (see src/probes.py).
@@ -116,6 +134,13 @@ MUX_BATCHED_PUSH_TIMEOUT_US = 33000
 MAVLINK_DEVICE = "/dev/ttyTHS1"    # Jetson Orin Nano UART wired to the FC's telemetry port
 MAVLINK_BAUD = 57600               # must match that serial port's SERIALx_BAUD param on the FC
 MAVLINK_HEARTBEAT_TIMEOUT_S = 5.0  # link considered down if no HEARTBEAT for this long
+# How much recent ATTITUDE history MavlinkLink.get_interpolated_attitude()
+# (src/mavlink_link.py) keeps, to align a camera frame's capture time with
+# the nearest-bracketing attitude samples instead of whatever ATTITUDE
+# message happened to arrive last. GPS position is NOT buffered this way
+# (nearest/latest value only) -- it changes slowly enough that this isn't
+# worth the extra complexity; see src/geolocation.py.
+MAVLINK_ATTITUDE_BUFFER_S = 2.0
 
 # ---------------------------------------------------------------------------
 # Mission mode -- gates FOLLOW / ISR behavior (see src/mission.py). Neither

@@ -60,6 +60,9 @@ one, instead of re-discovering the same class of problem from scratch.
 | `pyds` | 1.2.0 | **Not on PyPI.** Declared as a direct wheel URL (`pyds @ https://...`) from the [deepstream_python_apps v1.2.0](https://github.com/NVIDIA-AI-IOT/deepstream_python_apps/releases/tag/v1.2.0) release, matching DS 7.1 + cp310 + aarch64. Must be declared this way, not installed via a separate manual `uv pip install <url>` — anything not in `dependencies` is untracked and gets removed by the next `uv sync` (happened once). Also: because this wheel is `cp310`/`linux_aarch64`-only, adding it as a real dependency broke `uv sync` outright once (`requires-python = ">=3.10"` alone lets uv's universal resolver try — and fail — to also solve for e.g. Python 3.14 on Windows, where no `pyds` wheel exists at all, even though nothing runs this project there). Fixed by pinning `requires-python = ">=3.10,<3.11"` and adding `[tool.uv] environments = ["sys_platform == 'linux' and platform_machine == 'aarch64'"]` — both narrow uv's resolution to what this project actually is. |
 | `matplotlib` | 3.10.9 (transitive, via `ultralytics`) | Works, but needed a runtime workaround for `mpl_toolkits`/`Axes3D` — see `src/debug_plot.py` and README.md's "Notable gotchas" section |
 | `opencv-python` | ≥4.8.0 | Already installed transitively via `ultralytics` (confirmed working on this device), now also declared explicitly since `src/calibration.py` genuinely depends on it — no new aarch64 risk |
+| `scipy` | ≥1.11 | For `src/geolocation.py`'s camera→body→NED rotation chain (`scipy.spatial.transform.Rotation`). Mainstream scientific-Python package with long-standing manylinux aarch64 wheels — low risk by this project's established pattern (see note below the table), but **added for the geolocation feature and not yet actually run on-device** — confirm with `uv sync` + the sanity check below before trusting |
+| `pymap3d` | ≥3.0 | For `src/geolocation.py`'s NED→geodetic step (`pymap3d.ned2geodetic`). Pure Python, numpy-only, no compiled extensions — no platform-specific wheel risk at all, unlike `scipy`/`opencv-python`/`torch`. Also unverified on-device yet, but that risk is essentially nil here given it's pure Python |
+| `pyyaml` | ≥6.0 | For `src/extrinsics.py`'s `configs/camera_body_extrinsics.yaml` loader. Almost certainly already present transitively (`ultralytics` uses YAML internally) — declared explicitly since `extrinsics.py` genuinely depends on it, same reasoning as `opencv-python` |
 | **`open3d` — evaluated, rejected** | — | **Do not re-add without reading this first.** Official Open3D on PyPI has never published a Linux aarch64 wheel for Python 3.10 (checked the full release history via PyPI's API — 0.16+ added cp310 but only for x86_64/macOS/Windows; earlier versions with `manylinux2014_aarch64` wheels topped out at Python 3.9). A third-party `open3d-unofficial-arm` wheel does exist for this exact platform/Python combo, and building from source is the officially-documented Jetson path — both were rejected as disproportionate for a debug-only visualization (unaudited binary vs. a 1-3+ hour build with known Jetson-specific build issues). The depth-heatmap feature was folded into the existing `src/debug_plot.py` (matplotlib) instead — see below. |
 
 Every package above other than the Jetson-native `torch`/`torchvision` pair
@@ -89,6 +92,10 @@ uv sync   # also installs pyds -- declared as a direct wheel URL in pyproject.to
 uv run python -c "import gi; gi.require_version('Gst','1.0'); \
     gi.require_version('GstRtspServer','1.0'); \
     from gi.repository import Gst, GstRtspServer; import pyds; print('ok')"
+
+# Sanity check for the geolocation feature's new dependencies (not yet
+# run on this device -- see the package table above):
+uv run python -c "import scipy, pymap3d, yaml; print('ok')"
 ```
 Do **not** add `pygobject`/`pycairo` as a pip/uv dependency — that tries to
 compile pycairo from source against `libcairo2-dev` (usually missing) and,
@@ -264,15 +271,19 @@ main.py                                    entry point, arg parsing, GLib mainlo
 src/config.py                              all tunables (camera, model, classes, RTSP, tiler)
 src/pipeline.py                            GStreamer/DeepStream pipeline construction
 src/probes.py                              per-frame metadata probe: class filter, distance calc, OSD text; register_detection_listener() is the subscribe point for every Detection (full rate); register_frame_status_provider() draws an on-screen HUD line (MAVLink/mission status)
-src/distance.py                            monocular X/Y/Z estimator (+ stereo placeholder); SmoothedDetection averages the on-screen label over config.DISPLAY_AVERAGE_WINDOW_S, presentational only -- FOLLOW/debug plot still get the raw per-frame estimate
+src/distance.py                            monocular X/Y/Z estimator (always-on) + estimate_xyz_stereo() (pure math, given a disparity value); SmoothedDetection averages the on-screen label over config.DISPLAY_AVERAGE_WINDOW_S, presentational only -- FOLLOW/debug plot still get the raw per-frame estimate
 src/calibration.py                         loads configs/stereo_calibration.yaml (cv2.FileStorage); StereoCalibration dataclass + lazy rectify_maps() -- see "Stereo calibration" below
+src/stereo_depth.py                        on-demand (NOT per-frame) real stereo disparity for one detection at a time -- pyds buffer -> numpy, rectification, cv2.StereoSGBM on an ROI; see "Geolocation" below
+src/extrinsics.py                          loads configs/camera_body_extrinsics.yaml -- fixed camera->body mounting transform (rotation + lever-arm); see "Geolocation" below
+src/geolocation.py                         camera_to_latlon(): the full camera -> body -> NED -> lat/lon/alt chain; see "Geolocation" below
 src/debug_plot.py                          --debug-only live 3D scatter plot of detection X/Y/Z (matplotlib), colored as a depth heatmap (near=red, far=blue), marker shape = camera; needs a display + GUI backend, same caveat as nveglglessink
-src/mavlink_link.py                        MavlinkLink: UART connection to the flight controller, IMU/GPS/compass telemetry getters, send_velocity_setpoint()
+src/mavlink_link.py                        MavlinkLink: UART connection to the flight controller, IMU/GPS/compass telemetry getters, get_interpolated_attitude() (rolling ATTITUDE buffer, see "Geolocation" below), send_velocity_setpoint()
 src/pid.py                                 PIDController (generic) + ObjectFollowController (drone-follow control loop built on it) -- see "MAVLink / Mission" below
 src/mission.py                             Mission: gates FOLLOW/ISR behind config.MISSION_MODE + the FC's live flight mode; ISR is scaffolded, not yet implemented
 configs/pgie_yolo26n_config.txt            nvinfer config for the YOLO26n engine
 configs/labels_coco.txt                    COCO-80 class names, index-matched to the engine's output
 configs/stereo_calibration.yaml            compact chessboard stereo calibration (cv2.stereoCalibrate/stereoRectify output, no baked-in remap tables) -- see "Stereo calibration" below
+configs/camera_body_extrinsics.yaml        camera->body mounting transform (placeholder/unmeasured) -- see "Geolocation" below
 nvdsinfer_custom_impl_yolo26/*.cpp/Makefile   custom bbox parser for YOLO26's NMS-free (already-final) output head -- confidence-filter only, no decode/NMS
 export_engine.py                           runs the (unchanged) .pt -> .engine export on-device with diagnostics, copies result into models/
 models/yolo26n.engine                      <- exported engine lives here (not committed)
@@ -377,6 +388,106 @@ similar visual(-inertial) SLAM, which needs exactly this kind of
 calibration data for its stereo mode. Neither is built yet — see "Known
 limitations / Next steps" below for what's still required for each.
 
+## Geolocation (camera detection -> absolute lat/lon/altitude)
+
+`src/geolocation.py`'s `camera_to_latlon(detection, telemetry, extrinsics,
+xyz_cam_override=None, attitude_override=None) -> Optional[GeoPosition]`
+chains: camera frame -> body frame -> local NED -> geodetic lat/lon/alt.
+Not wired into `main.py`/`src/probes.py`'s always-on per-frame path — it's
+callable infrastructure, meant to be invoked on demand (e.g. once per
+FOLLOW-locked target, or per ISR log tick once that's implemented), for
+two reasons: real stereo depth (below) is genuine CPU work this project
+has otherwise avoided at 60fps, and geolocation itself doesn't need to run
+at video framerate.
+
+**The chain, in order:**
+
+1. **Camera -> body** (`src/extrinsics.py`, `configs/camera_body_extrinsics.yaml`):
+   a fixed rotation (`mount_roll/pitch/yaw_deg`, aerospace ZYX) + lever-arm
+   translation (`lever_arm_x/y/z_m`) describing how the camera is
+   physically mounted relative to the flight controller's body frame (x
+   forward, y right, z down). **Currently placeholder/unmeasured values
+   (identity mount, zero lever-arm)** — every lat/lon this pipeline
+   produces is silently biased by whatever the true mounting angle is
+   until this is measured and validated (point the rig at a known-bearing/
+   known-range ground landmark with the drone stationary and GPS-fixed,
+   compare, adjust). Do this before trusting FOLLOW/ISR logging output
+   downstream of this chain.
+2. **Real stereo depth** (`src/stereo_depth.py`), optional — pass its
+   result as `camera_to_latlon`'s `xyz_cam_override`; omitting it falls
+   back to the detection's own monocular `x_m/y_m/z_m`
+   (`src/distance.py estimate_xyz()`, already used everywhere else in the
+   pipeline). Deliberately an **ROI-based, on-demand** disparity search
+   for one detection at a time, not a full-frame dense disparity map:
+   - `extract_luma_plane()` pulls one camera's raw pixels out of the
+     DeepStream NVMM buffer into a CPU-accessible numpy array via
+     `pyds.get_nvds_buf_surface()`. **Unverified on real hardware** — every
+     official DeepStream Python sample uses this against RGBA buffers
+     (after an explicit `nvvideoconvert`); this project's PGIE src-pad
+     probe runs on raw NV12 buffers instead (see `src/pipeline.py`), and
+     whether `get_nvds_buf_surface()` hands back a usable array in that
+     format, and at what shape/stride, has not been confirmed on-device.
+     If it doesn't, the fix is either converting to RGBA first (cheap on
+     GPU, needs a spare tee branch) or reading the NV12 buffer at a
+     different assumed layout.
+   - `rectify_bbox_left()` maps a detection's bbox from the original
+     (distorted) image into rectified-image coordinates via
+     `cv2.undistortPoints(..., R=R1, P=P1)` — not a plain coordinate
+     scale, since undistortion is a nonlinear per-pixel warp.
+   - `roi_disparity()` crops just wide enough to cover the bbox plus
+     `config.STEREO_MAX_DISPARITY_PX` (must stay a multiple of 16) and
+     runs `cv2.StereoSGBM` on that crop only, returning the median
+     disparity over the bbox's own pixels (robust to a few bad/occluded
+     matches). Returns `None` on failure (object closer than the
+     configured max-disparity's minimum depth, near a frame edge, no
+     texture) — callers fall back to monocular, this is expected, not a
+     bug.
+   - Only meaningful for `source_id==0` (left camera, matching
+     `src/calibration.py`'s left-as-reference convention) — right-camera
+     detections stay monocular.
+   - `estimate_stereo_xyz()` ties the above together end to end; the pure
+     math (disparity -> X/Y/Z given the rectified principal point/focal
+     length) is `src/distance.py`'s `estimate_xyz_stereo()`.
+3. **Body -> NED**: `scipy.spatial.transform.Rotation.from_euler('ZYX',
+   [yaw, pitch, roll], degrees=True)` applied to the body-frame vector,
+   using the drone's own attitude — either `telemetry.imu` (whatever
+   `MavlinkLink.get_telemetry()` last cached) or, better,
+   `attitude_override` from `MavlinkLink.get_interpolated_attitude(
+   frame_capture_time)` (below).
+4. **NED -> geodetic**: `pymap3d.ned2geodetic(n, e, d, lat0, lon0, h0)` — a
+   flat-earth/local-tangent-plane approximation anchored at the drone's
+   *current* GPS fix (`telemetry.gps.latitude_deg/longitude_deg/
+   altitude_msl_m`). Fine at FOLLOW/ISR ranges; would need a proper
+   ECEF-based approach if this pipeline is ever used at ranges where
+   earth curvature matters.
+5. **Fix-gating**: `camera_to_latlon()` returns `None` outright if
+   `telemetry.gps is None` or `not telemetry.gps.has_fix` — this reuses
+   `MavlinkLink.get_telemetry()`'s existing IMU-only-fallback logic, no
+   new gating code was needed here.
+6. **Timestamp buffering** (`src/mavlink_link.py`): unlike every other
+   `get_*()` method on `MavlinkLink` (which only ever track the single
+   latest message of each type), ATTITUDE messages are additionally kept
+   in a short rolling buffer (`config.MAVLINK_ATTITUDE_BUFFER_S`, default
+   2.0s). `get_interpolated_attitude(timestamp)` linearly interpolates
+   roll/pitch/yaw to a specific timestamp (e.g. a camera frame's capture
+   time) instead of returning whatever ATTITUDE message arrived most
+   recently relative to whenever it's called — handles yaw's ±180°
+   wraparound correctly (shortest-path interpolation, not a naive
+   subtraction). GPS position deliberately does **not** get this
+   treatment — it changes slowly enough that nearest/latest
+   (`get_gps_compass()`) is an accepted simplification, not an oversight.
+
+**Not yet done** (explicitly deferred, per the project's own build order):
+multi-frame fusion across repeated sightings of the same object — that
+needs an object tracker (`nvtracker`, see "Known limitations" below) to
+even define "the same object" across frames, and neither exists yet.
+
+**New dependencies**: `scipy`, `pymap3d`, `pyyaml` — see the package
+table above. Genuinely new/unverified on this exact device (unlike most
+of this project's dependencies, which were already confirmed working
+before being declared) — run the sanity check in that section and `uv
+sync` before relying on any of this.
+
 ## MAVLink / Mission (FOLLOW implemented, ISR scaffolded)
 
 Companion-computer link to the flight controller over UART
@@ -459,15 +570,26 @@ change frame to frame.
 
 ## Known limitations / Next steps
 
-- **Distance estimation is still monocular at runtime**, even though
-  stereo calibration is now done (see "Stereo calibration" above) —
-  `src/distance.py`'s `estimate_xyz_stereo()` stub isn't implemented yet,
-  `src/probes.py` still calls the known-height/focal-length `estimate_xyz()`.
-  Calibration was the prerequisite; the actual disparity computation
-  (rectify both frames via `src/calibration.py`'s maps, `cv2.StereoSGBM`
-  or similar, reproject via `Q`) is the remaining work. This also limits
-  FOLLOW's accuracy in the meantime, since it holds station on this same
-  monocular Z estimate.
+- **`src/probes.py`'s always-on per-frame path is still monocular** —
+  real stereo depth exists now (`src/stereo_depth.py`, see "Geolocation"
+  above) but deliberately only as an on-demand call for one detection at
+  a time, not wired into the 60fps per-frame overlay/FOLLOW loop (full
+  block matching at that rate would be real, currently-unmeasured CPU
+  cost). FOLLOW therefore still holds station on the monocular Z estimate
+  in the meantime. Wiring stereo into FOLLOW's control loop specifically
+  (lower rate than 60fps is fine there — it already runs at
+  `config.FOLLOW_UPDATE_INTERVAL_S`, 5Hz) would be the natural next step
+  once `src/stereo_depth.py` is validated on real hardware.
+- **`src/stereo_depth.py` and `src/geolocation.py` are unverified on real
+  hardware** — written and reasoned through carefully but never run on
+  the Jetson (this was implemented without device access). The biggest
+  risk is `pyds.get_nvds_buf_surface()` against this pipeline's NV12
+  buffers (every official DeepStream sample uses it against RGBA
+  instead) — see "Geolocation" above for the fallback if that doesn't
+  work as assumed. Second: `configs/camera_body_extrinsics.yaml`'s
+  mounting angles are still placeholder (identity/zero) values and need
+  measuring against a real known-bearing target before the lat/lon output
+  can be trusted.
 - **No object tracker yet** (no `nvtracker` in the pipeline) — detections
   aren't assigned persistent IDs across frames. Add `nvtracker` between
   `pgie` and `tiler` when ID persistence is needed (e.g. for stable

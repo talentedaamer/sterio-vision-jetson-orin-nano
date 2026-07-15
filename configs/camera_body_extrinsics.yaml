@@ -1,0 +1,45 @@
+# Camera -> flight-controller body frame mounting transform.
+#
+# PLACEHOLDER VALUES (identity mount, zero lever-arm) -- NOT YET MEASURED
+# on the real rig. Every lat/lon computed by src/geolocation.py depends on
+# these being right; a wrong mounting angle here biases every computed
+# position by a fixed, silent amount (doesn't show up as noise/jitter --
+# it's a constant offset that looks perfectly plausible). Validate before
+# trusting: point the rig at a known-bearing/known-range landmark on the
+# ground with the drone stationary and GPS-fixed, compare the computed
+# lat/lon against the landmark's actual position, and adjust the angles
+# below until they agree. Do this before flight-testing FOLLOW/ISR logging
+# against this pipeline's lat/lon output.
+#
+# Conventions:
+#   - Camera frame (OpenCV): x right, y down, z forward (out of lens) --
+#     same convention already used by Detection.x_m/y_m/z_m in
+#     src/distance.py.
+#   - Body frame (aerospace/ArduPilot): x forward, y right, z down.
+#   - mount_roll/pitch/yaw_deg describe the camera's PHYSICAL ORIENTATION
+#     relative to "mounted level and forward-facing" (i.e. camera z aimed
+#     exactly along body +x, camera x aligned with body +y, camera y
+#     aligned with body +z) -- NOT the vehicle's own attitude, which comes
+#     from MAVLink separately at runtime. Applied as an aerospace ZYX
+#     (yaw, pitch, roll) rotation in body-frame axes, same sequence as the
+#     body->NED rotation in src/geolocation.py.
+#   - Positive mount_pitch_deg = camera tilted UP from body-forward --
+#     same sign convention as the vehicle's own ATTITUDE.pitch (standard
+#     aerospace: positive pitch = nose/forward-axis rotates up). For a
+#     camera angled DOWN toward the ground (the common ISR/FOLLOW case),
+#     use a NEGATIVE mount_pitch_deg. Verified against the actual rotation
+#     math in scratch testing before this file was written -- do not "fix"
+#     the sign without re-deriving it (see src/extrinsics.py).
+#   - Positive mount_yaw_deg = camera pointed toward the right of
+#     body-forward.
+mount_roll_deg: 0.0
+mount_pitch_deg: 0.0
+mount_yaw_deg: 0.0
+
+# Lever-arm: camera optical center's position relative to the body/FC
+# origin, in body-frame meters (x forward, y right, z down). Only matters
+# much at short standoff ranges (e.g. FOLLOW's ~3m) -- at ISR altitudes
+# (30m+) a few cm of lever-arm is negligible next to GPS/attitude error.
+lever_arm_x_m: 0.0
+lever_arm_y_m: 0.0
+lever_arm_z_m: 0.0

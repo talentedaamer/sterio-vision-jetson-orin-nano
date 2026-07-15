@@ -19,10 +19,18 @@ Three telemetry methods, per the intended usage:
   - get_telemetry()     -- the main entry point: merges IMU + GPS/compass
     when a GPS fix is available, falls back to IMU-only (gps=None)
     otherwise. This is the fallback logic described in the project spec.
+
+get_interpolated_attitude(timestamp) additionally serves src/geolocation.py:
+it keeps a short rolling buffer of recent ATTITUDE samples (unlike every
+other get_*() method here, which only ever tracks the single latest
+message of each type) and linearly interpolates roll/pitch/yaw to a
+specific timestamp -- e.g. a camera frame's capture time -- instead of
+returning whatever ATTITUDE message happened to arrive most recently.
 """
 import math
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional
 
@@ -73,6 +81,18 @@ class Telemetry:
     gps: Optional[GpsCompassTelemetry]
 
 
+@dataclass
+class InterpolatedAttitude:
+    """Attitude aligned to a specific timestamp (e.g. a camera frame's
+    capture time) via get_interpolated_attitude(), rather than whatever
+    ATTITUDE message happened to arrive last. Only roll/pitch/yaw --
+    that's all src/geolocation.py's rotation chain needs."""
+    timestamp: float
+    roll_deg: float
+    pitch_deg: float
+    yaw_deg: float
+
+
 # SET_POSITION_TARGET_LOCAL_NED type_mask bits (MAV_FRAME docs) -- named
 # explicitly rather than a hardcoded magic literal, since getting this
 # wrong sends a command with unintended fields active.
@@ -90,6 +110,16 @@ _VELOCITY_AND_YAW_RATE_ONLY = (
 )
 
 
+def _lerp_angle_deg(a: float, b: float, frac: float) -> float:
+    """Linearly interpolates between two angles in degrees, taking the
+    shorter way around the +/-180 wraparound (a plain `a + (b-a)*frac`
+    would swing the wrong way whenever a and b straddle the +/-180
+    boundary -- yaw crosses this constantly)."""
+    diff = ((b - a + 180.0) % 360.0) - 180.0
+    result = a + diff * frac
+    return ((result + 180.0) % 360.0) - 180.0
+
+
 class MavlinkLink:
     def __init__(self, device: str = config.MAVLINK_DEVICE, baud: int = config.MAVLINK_BAUD):
         self._device = device
@@ -100,6 +130,7 @@ class MavlinkLink:
         self._reader_thread: Optional[threading.Thread] = None
 
         self._attitude = None
+        self._attitude_history: deque = deque()  # (arrival_time, ATTITUDE msg), newest last
         self._raw_imu = None
         self._vfr_hud = None
         self._gps_raw = None
@@ -135,6 +166,11 @@ class MavlinkLink:
             with self._lock:
                 if msg_type == "ATTITUDE":
                     self._attitude = msg
+                    now = time.time()
+                    self._attitude_history.append((now, msg))
+                    cutoff = now - config.MAVLINK_ATTITUDE_BUFFER_S
+                    while self._attitude_history and self._attitude_history[0][0] < cutoff:
+                        self._attitude_history.popleft()
                 elif msg_type in ("RAW_IMU", "SCALED_IMU2"):
                     self._raw_imu = msg
                 elif msg_type == "VFR_HUD":
@@ -199,6 +235,59 @@ class MavlinkLink:
             groundspeed_mps=vfr_hud.groundspeed,
             airspeed_mps=vfr_hud.airspeed,
             relative_altitude_m=relative_altitude_m,
+        )
+
+    def get_interpolated_attitude(self, timestamp: float) -> Optional[InterpolatedAttitude]:
+        """Roll/pitch/yaw interpolated to `timestamp` (time.time()-based,
+        e.g. a camera frame's capture time) from the last
+        config.MAVLINK_ATTITUDE_BUFFER_S seconds of buffered ATTITUDE
+        samples, instead of just returning whatever arrived most recently.
+        Matters more for attitude than GPS position -- attitude changes
+        fast enough during normal flight that "latest sample" can be
+        meaningfully stale relative to a camera frame captured even a
+        fraction of a second earlier; GPS position does not need this
+        (see get_gps_compass(), used as a nearest/latest match instead).
+
+        Returns None if the buffer is empty. If `timestamp` falls outside
+        the buffered range, clamps to the nearest edge sample rather than
+        extrapolating.
+        """
+        with self._lock:
+            history = list(self._attitude_history)
+        if not history:
+            return None
+
+        if timestamp <= history[0][0]:
+            t, msg = history[0]
+            return InterpolatedAttitude(
+                timestamp=t, roll_deg=math.degrees(msg.roll),
+                pitch_deg=math.degrees(msg.pitch), yaw_deg=math.degrees(msg.yaw),
+            )
+        if timestamp >= history[-1][0]:
+            t, msg = history[-1]
+            return InterpolatedAttitude(
+                timestamp=t, roll_deg=math.degrees(msg.roll),
+                pitch_deg=math.degrees(msg.pitch), yaw_deg=math.degrees(msg.yaw),
+            )
+
+        # Find the bracketing pair and linearly interpolate. Small buffer
+        # (config.MAVLINK_ATTITUDE_BUFFER_S seconds of ATTITUDE messages,
+        # typically far under a hundred entries) -- a linear scan is fine,
+        # no need for bisect.
+        for (t0, msg0), (t1, msg1) in zip(history, history[1:]):
+            if t0 <= timestamp <= t1:
+                frac = 0.0 if t1 == t0 else (timestamp - t0) / (t1 - t0)
+                roll = _lerp_angle_deg(math.degrees(msg0.roll), math.degrees(msg1.roll), frac)
+                pitch = _lerp_angle_deg(math.degrees(msg0.pitch), math.degrees(msg1.pitch), frac)
+                yaw = _lerp_angle_deg(math.degrees(msg0.yaw), math.degrees(msg1.yaw), frac)
+                return InterpolatedAttitude(timestamp=timestamp, roll_deg=roll, pitch_deg=pitch, yaw_deg=yaw)
+
+        # Unreachable given the clamping above, but fall back to latest
+        # rather than raising if it's ever hit.
+        t, msg = history[-1]
+        return InterpolatedAttitude(
+            timestamp=t, roll_deg=math.degrees(msg.roll),
+            pitch_deg=math.degrees(msg.pitch), yaw_deg=math.degrees(msg.yaw),
         )
 
     def get_gps_compass(self) -> Optional[GpsCompassTelemetry]:

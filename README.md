@@ -43,9 +43,14 @@ shows live.*
   `src/calibration.py`) — `config.FOCAL_LENGTH_PX`/`STEREO_BASELINE_M` now use
   it, improving the existing monocular estimate. Full detail in
   [CLAUDE.md § Stereo calibration](CLAUDE.md)
-- ⏳ Not yet done: real stereo disparity depth (calibration is done, the
-  disparity computation itself isn't), object tracking (persistent IDs),
-  ISR data-logging mission mode — see
+- ✅ Camera detection → absolute lat/lon/altitude pipeline
+  (`src/geolocation.py camera_to_latlon()`, real on-demand stereo depth via
+  `src/stereo_depth.py`, camera→body mounting transform via
+  `src/extrinsics.py`) — **written but unverified on real hardware, and
+  the mounting transform is still placeholder/unmeasured values**, see
+  [CLAUDE.md § Geolocation](CLAUDE.md)
+- ⏳ Not yet done: object tracking (persistent IDs), ISR data-logging
+  mission mode, multi-frame fusion for geolocation — see
   [Roadmap](#roadmap--known-limitations)
 
 ## Hardware
@@ -83,6 +88,9 @@ shows live.*
 | Ultralytics | ≥8.4.87 (export-only; not used by the runtime pipeline) |
 | ONNX | ≥1.22.0 (export-only) |
 | pymavlink | ≥2.4.40 (flight controller telemetry/command link, see [MAVLink / Mission](#mavlink--mission)) |
+| scipy | ≥1.11 (camera→body→NED rotation chain, see [CLAUDE.md § Geolocation](CLAUDE.md)) |
+| pymap3d | ≥3.0 (NED→geodetic lat/lon/alt, pure Python) |
+| pyyaml | ≥6.0 (camera-body mounting transform config) |
 | Package manager | [uv](https://docs.astral.sh/uv/) |
 
 See [CLAUDE.md § Python package dependencies](CLAUDE.md) for the full,
@@ -171,7 +179,11 @@ directly on this Jetson whenever the model changes; see
 | [`src/config.py`](src/config.py) | All tunables in one place: camera capture settings, model/engine paths, target detection classes, distance-estimation constants, tiler/RTSP settings. |
 | [`src/pipeline.py`](src/pipeline.py) | Builds and links the full GStreamer/DeepStream pipeline (cameras → mux → inference → tiler → OSD → RTSP/debug branches) and starts the RTSP server. |
 | [`src/probes.py`](src/probes.py) | The per-frame metadata probe: filters to target classes, computes distance per detection, sets on-screen label text. `register_detection_listener()` lets other code subscribe to every detection (full rate) without editing this file — used by `src/debug_plot.py` and `src/mission.py`. `register_frame_status_provider()` draws a one-line on-screen HUD (MAVLink/mission status) in both the RTSP stream and `--debug`'s local display. |
-| [`src/distance.py`](src/distance.py) | Monocular X/Y/Z estimator (known object height + focal length), plus a placeholder for the future stereo-disparity estimator. |
+| [`src/distance.py`](src/distance.py) | Monocular X/Y/Z estimator (known object height + focal length, always-on), plus `estimate_xyz_stereo()` — the pure-math half of real stereo depth, given a disparity value. |
+| [`src/calibration.py`](src/calibration.py) | Loads `configs/stereo_calibration.yaml`; rectification maps for stereo depth. |
+| [`src/stereo_depth.py`](src/stereo_depth.py) | On-demand (not per-frame) real stereo disparity for one detection at a time. See [CLAUDE.md § Geolocation](CLAUDE.md). |
+| [`src/extrinsics.py`](src/extrinsics.py) | Loads `configs/camera_body_extrinsics.yaml`, the camera→body mounting transform. |
+| [`src/geolocation.py`](src/geolocation.py) | `camera_to_latlon()` — the full camera → body → NED → lat/lon/alt chain. |
 | [`src/debug_plot.py`](src/debug_plot.py) | `--debug`-only: live 3D scatter plot of detection X/Y/Z via matplotlib, colored as a depth heatmap (near=red, far=blue) with marker shape indicating camera. Needs a display attached to the Jetson and a working GUI backend (Tk/Qt/GTK) — same physical requirement as the `nveglglessink` bench-display branch; degrades to a harmless no-op with a warning if unavailable. |
 | [`src/mavlink_link.py`](src/mavlink_link.py) | `MavlinkLink`: UART connection to the flight controller, background telemetry reader, IMU/GPS/compass getters, `send_velocity_setpoint()`. See [MAVLink / Mission](#mavlink--mission). |
 | [`src/pid.py`](src/pid.py) | `PIDController` (generic) + `ObjectFollowController` (the drone-follow control loop). |
@@ -288,15 +300,19 @@ mission mode is set).
 
 ## Roadmap / known limitations
 
-- **Distance is still monocular at runtime**, even though stereo
-  calibration is now done — `config.FOCAL_LENGTH_PX`/`STEREO_BASELINE_M`
-  were updated from real chessboard calibration data (see
-  [CLAUDE.md § Stereo calibration](CLAUDE.md)), improving the existing
-  known-height/focal-length estimate, but `src/distance.py`'s
-  `estimate_xyz_stereo()` stub isn't implemented yet — the actual
-  disparity computation is the remaining work. This also limits FOLLOW's
-  accuracy in the meantime, since it holds station on this same
-  monocular Z estimate.
+- **The always-on per-frame path is still monocular** — real stereo depth
+  now exists (`src/stereo_depth.py`) but only as an on-demand call for one
+  detection at a time, not wired into the 60fps overlay/FOLLOW loop (the
+  CPU cost of full block matching at that rate hasn't been measured).
+  FOLLOW still holds station on the monocular Z estimate in the meantime.
+- **Geolocation (`src/geolocation.py`) is unverified on real hardware** —
+  implemented without device access. The main risk is
+  `pyds.get_nvds_buf_surface()` against this pipeline's NV12 buffers
+  (official DeepStream samples all use it against RGBA instead); the
+  camera→body mounting transform in
+  `configs/camera_body_extrinsics.yaml` is also still placeholder
+  (unmeasured) values. See [CLAUDE.md § Geolocation](CLAUDE.md) before
+  trusting any lat/lon this produces.
 - **ISR mission mode is scaffolded but not implemented** — `Mission.
   _update_isr()` detects its trigger condition (flight mode + altitude)
   but doesn't log anything yet. Next milestone.
