@@ -251,7 +251,7 @@ main.py                                    entry point, arg parsing, GLib mainlo
 src/config.py                              all tunables (camera, model, classes, RTSP, tiler)
 src/pipeline.py                            GStreamer/DeepStream pipeline construction
 src/probes.py                              per-frame metadata probe: class filter, distance calc, OSD text; register_detection_listener() is the subscribe point for every Detection (full rate); register_frame_status_provider() draws an on-screen HUD line (MAVLink/mission status)
-src/distance.py                            monocular X/Y/Z estimator (+ stereo placeholder)
+src/distance.py                            monocular X/Y/Z estimator (+ stereo placeholder); SmoothedDetection averages the on-screen label over config.DISPLAY_AVERAGE_WINDOW_S, presentational only -- FOLLOW/debug plot still get the raw per-frame estimate
 src/calibration.py                         loads configs/stereo_calibration.yaml (cv2.FileStorage); StereoCalibration dataclass + lazy rectify_maps() -- see "Stereo calibration" below
 src/debug_plot.py                          --debug-only live 3D scatter plot of detection X/Y/Z (matplotlib), colored as a depth heatmap (near=red, far=blue), marker shape = camera; needs a display + GUI backend, same caveat as nveglglessink
 src/mavlink_link.py                        MavlinkLink: UART connection to the flight controller, IMU/GPS/compass telemetry getters, send_velocity_setpoint()

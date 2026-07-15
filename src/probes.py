@@ -19,6 +19,11 @@ register_follow_active_query() lets src/mission.py report whether FOLLOW
 is currently locked onto a target, so the object matching
 config.FOLLOW_TARGET_CLASS is drawn red (locked) instead of green here.
 
+The on-screen X/Y/Z label is smoothed (SmoothedDetection, one per
+(source_id, class_id) -- see distance.py) so it only changes once a
+second instead of flickering every frame; on_detection()/FOLLOW/the
+debug plot still get the raw, un-smoothed per-frame estimate.
+
 osd_sink_pad_status_probe() is a separate probe, attached to nvdsosd's
 SINK pad (after tiling, so there's exactly one composited frame to draw
 on) -- it draws a persistent one-line HUD (MAVLink link health, mission
@@ -36,11 +41,12 @@ from gi.repository import Gst
 import pyds
 
 from . import config
-from .distance import Detection, estimate_xyz
+from .distance import Detection, SmoothedDetection, estimate_xyz
 
 _listeners: list[Callable[[Detection], None]] = []
 _frame_status_provider: Optional[Callable[[], Optional[str]]] = None
 _follow_active_query: Optional[Callable[[], bool]] = None
+_smoothers: dict = {}   # (source_id, class_id) -> SmoothedDetection
 
 
 def register_frame_status_provider(callback: Callable[[], Optional[str]]) -> None:
@@ -131,6 +137,15 @@ def pgie_src_pad_buffer_probe(pad, info, u_data):
             )
             on_detection(detection)
 
+            # Smoothed purely for the on-screen label -- on_detection() above
+            # (and therefore FOLLOW/the debug plot) already got the raw,
+            # un-smoothed x/y/z. One smoother per (source_id, class_id);
+            # same "identity by class, not by object" limitation as FOLLOW's
+            # target selection, since there's no tracker yet.
+            smoother_key = (frame_meta.source_id, obj_meta.class_id)
+            smoother = _smoothers.setdefault(smoother_key, SmoothedDetection())
+            sx, sy, sz = smoother.update(x, y, z)
+
             # A detection is drawn as the "locked" target -- red box, center
             # marker, distance called out -- while FOLLOW is actively locked
             # on AND it matches the class being followed. There's no object
@@ -152,11 +167,11 @@ def pgie_src_pad_buffer_probe(pad, info, u_data):
 
             txt = obj_meta.text_params
             if is_locked_target:
-                txt.display_text = f"TARGET LOCKED | {detection.label} | Dist: {z:.1f}m"
+                txt.display_text = f"TARGET LOCKED | {detection.label} | Dist: {sz:.1f}m"
             else:
                 txt.display_text = (
                     f"{detection.label} {detection.confidence:.2f} | "
-                    f"X:{x:.1f} Y:{y:.1f} Z:{z:.1f}m"
+                    f"X:{sx:.1f} Y:{sy:.1f} Z:{sz:.1f}m"
                 )
             txt.font_params.font_name = "Sans"
             txt.font_params.font_size = 11

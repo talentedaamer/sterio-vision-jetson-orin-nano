@@ -57,6 +57,12 @@ KNOWN_HEIGHTS_M = {
 FOCAL_LENGTH_PX = 921.5871   # P1/P2's fx, post-rectification (both cameras share it)
 STEREO_BASELINE_M = 0.094319  # from calibration's T vector, not the earlier ruler measurement
 
+# On-screen X/Y/Z label smoothing (src/distance.py SmoothedDetection) --
+# presentational only, does NOT affect FOLLOW/debug-plot, which still use
+# the raw per-frame estimate directly (see src/probes.py).
+DISPLAY_AVERAGE_WINDOW_S = 1.0     # how much recent history to average over
+DISPLAY_UPDATE_INTERVAL_S = 1.0    # how often the displayed number changes
+
 # ---------------------------------------------------------------------------
 # Depth "heatmap" coloring for the --debug 3D plot (src/debug_plot.py).
 # Colors each detected object by its existing monocular Z estimate (near =
