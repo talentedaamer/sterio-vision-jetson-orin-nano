@@ -270,16 +270,18 @@ pyproject.toml                             uv project + deps
 main.py                                    entry point, arg parsing, GLib mainloop, bus/error handling
 src/config.py                              all tunables (camera, model, classes, RTSP, tiler)
 src/pipeline.py                            GStreamer/DeepStream pipeline construction
-src/probes.py                              per-frame metadata probe: class filter, distance calc, OSD text; register_detection_listener() is the subscribe point for every Detection (full rate); register_frame_status_provider() draws an on-screen HUD line (MAVLink/mission status)
+src/probes.py                              per-frame metadata probe: class filter, distance calc, OSD text; register_detection_listener() is the subscribe point for every Detection (full rate); register_frame_status_provider() draws an on-screen HUD line (MAVLink/mission status); register_obstacle_listener() is the subscribe point for (bin_distances_m, bin_valid_mask) readings, throttled to config.AVOID_UPDATE_INTERVAL_S -- see "Obstacle avoidance" below
 src/distance.py                            monocular X/Y/Z estimator (always-on) + estimate_xyz_stereo() (pure math, given a disparity value); SmoothedDetection averages the on-screen label over config.DISPLAY_AVERAGE_WINDOW_S, presentational only -- FOLLOW/debug plot still get the raw per-frame estimate
 src/calibration.py                         loads configs/stereo_calibration.yaml (cv2.FileStorage); StereoCalibration dataclass + lazy rectify_maps() -- see "Stereo calibration" below
 src/stereo_depth.py                        on-demand (NOT per-frame) real stereo disparity for one detection at a time -- pyds buffer -> numpy, rectification, cv2.StereoSGBM on an ROI; see "Geolocation" below
+src/obstacle_depth.py                      band-wide (NOT per-detection) stereo disparity -> per-bin depth for MISSION_MODE=="AVOID" -- one cv2.StereoSGBM pass over a center vertical band, RealSense-style decimation/spatial/hole-filling stages, reduced to config.AVOID_NUM_BINS scalars; see "Obstacle avoidance" below
+src/avoidance.py                           NOT a steering controller -- BinDistanceSmoother (temporal EMA stage) + build_obstacle_distance() (pure) + ObstacleAvoidance (streams MAVLink OBSTACLE_DISTANCE to ArduPilot's own OA_TYPE); see "Obstacle avoidance" below
 src/extrinsics.py                          loads configs/camera_body_extrinsics.yaml -- fixed camera->body mounting transform (rotation + lever-arm); see "Geolocation" below
 src/geolocation.py                         camera_to_latlon(): the full camera -> body -> NED -> lat/lon/alt chain; see "Geolocation" below
 src/debug_plot.py                          --debug-only live 3D scatter plot of detection X/Y/Z (matplotlib), colored as a depth heatmap (near=red, far=blue), marker shape = camera; needs a display + GUI backend, same caveat as nveglglessink
-src/mavlink_link.py                        MavlinkLink: UART connection to the flight controller, IMU/GPS/compass telemetry getters, get_interpolated_attitude() (rolling ATTITUDE buffer, see "Geolocation" below), send_velocity_setpoint()
+src/mavlink_link.py                        MavlinkLink: UART connection to the flight controller, IMU/GPS/compass telemetry getters, get_interpolated_attitude() (rolling ATTITUDE buffer, see "Geolocation" below), send_velocity_setpoint() (FOLLOW), send_obstacle_distance() (AVOID)
 src/pid.py                                 PIDController (generic) + ObjectFollowController (drone-follow control loop built on it) -- see "MAVLink / Mission" below
-src/mission.py                             Mission: gates FOLLOW/ISR behind config.MISSION_MODE + the FC's live flight mode; ISR is scaffolded, not yet implemented
+src/mission.py                             Mission: gates FOLLOW/ISR/AVOID behind config.MISSION_MODE (FOLLOW/ISR additionally gated on the FC's live flight mode; AVOID is not, see "Obstacle avoidance" below); ISR is scaffolded, not yet implemented
 configs/pgie_yolo26n_config.txt            nvinfer config for the YOLO26n engine
 configs/labels_coco.txt                    COCO-80 class names, index-matched to the engine's output
 configs/stereo_calibration.yaml            compact chessboard stereo calibration (cv2.stereoCalibrate/stereoRectify output, no baked-in remap tables) -- see "Stereo calibration" below
@@ -568,6 +570,109 @@ follows the latest detection matching `FOLLOW_TARGET_CLASS` each cycle —
 with more than one matching object in frame, which one gets followed can
 change frame to frame.
 
+## Obstacle avoidance (`MISSION_MODE="AVOID"`)
+
+Unlike FOLLOW, this mode does **not** compute a steering command on this
+companion computer. It streams MAVLink `OBSTACLE_DISTANCE` (built from a
+low-rate stereo depth read) to ArduPilot's own proximity/object-avoidance
+system, which decides whether/how to bend the flight path
+(`OA_TYPE`=BendyRuler or Dijkstra's). This mirrors how a RealSense-class
+depth camera normally integrates with ArduPilot — the companion computer's
+job is producing a clean, correctly-shaped depth reading, not doing the
+avoidance itself.
+
+**FC-side setup (outside this repo)**: `PRX1_TYPE` = MAVLink,
+`OA_TYPE` = BendyRuler or Dijkstra's, `OA_DB_SIZE`/`OA_DB_EXPIRE` as
+needed — analogous to the `SERIALx_PROTOCOL`/`SERIALx_BAUD` prerequisite
+already documented above for this project's MAVLink link.
+
+**Depth pipeline (`src/obstacle_depth.py`)**: unlike `src/stereo_depth.py`
+(small ROI, one YOLO detection at a time, on demand), this runs ONE
+`cv2.StereoSGBM` pass over the full width of a center vertical band
+(`config.AVOID_BIN_HEIGHT_FRACTION`) of the rectified frame, then reduces
+that to `config.AVOID_NUM_BINS` (5) scalar readings — bin *after*
+computing depth, not one matcher call per bin. Maps RealSense's 4-stage
+post-processing filter chain onto this coarser shape:
+- **Decimation** — downsample the band crop by `config.AVOID_DECIMATION_FACTOR`
+  before matching (disparity rescaled back afterward — see the module's
+  decimation-math comment; easy to get backwards silently).
+- **Spatial** — edge-preserving smoothing via `cv2.bilateralFilter`.
+  `cv2.ximgproc`'s WLS disparity filter (the closer RealSense analog) was
+  considered and skipped — this project's resolved OpenCV build has no
+  `cv2-contrib` (confirmed absent on-device), same evaluate-and-reject
+  precedent as the Open3D note in the package table above.
+- **Temporal** — a per-bin EMA (`config.AVOID_TEMPORAL_EMA_ALPHA`) applied
+  *after* binning, across cycles, in `src/avoidance.py`'s
+  `BinDistanceSmoother` — the only stage needing state across calls.
+- **Hole-filling** — a bin below `config.AVOID_BIN_MIN_VALID_FRACTION`
+  valid pixels is filled from trusted neighboring bins (sparse/noisy
+  gaps), **except** the deterministic leftmost
+  `~config.STEREO_MAX_DISPARITY_PX`-wide strip (no valid match is possible
+  there regardless of scene content — nothing further left in the right
+  image to search against, true of any stereo system), which is marked
+  no-data rather than fabricated. `src/avoidance.py build_obstacle_distance()`
+  encodes no-data bins as MAVLink's `65535` sentinel, not a guessed value.
+
+**Measured on-device** (this Jetson, synthetic stereo pairs at this rig's
+real 1456×1088 / `AVOID_BIN_HEIGHT_FRACTION`=0.4 band size, real chessboard
+calibration): full `estimate_bin_distances()` (rectify+band+SGBM+spatial-
+filter+binning) averaged ~145ms at `AVOID_DECIMATION_FACTOR=2`, ~90ms at
+`=3`, ~77ms at `=4` — against a 200ms/5Hz budget
+(`AVOID_UPDATE_INTERVAL_S`) and this project's own measured YOLO+OSD
+baseline of 45-70% CPU/core (see "GPU utilization model" above).
+`AVOID_DECIMATION_FACTOR` defaults to `4` for this reason — 2 leaves too
+little headroom once the still-unmeasured buffer-extraction cost (below)
+is added. This does NOT include `pyds.get_nvds_buf_surface()`'s cost,
+which remains genuinely unverified on real hardware (see "Known
+limitations" below) — this benchmark used synthetic NumPy arrays in place
+of that call.
+
+**Threading**: `src/probes.py`'s `pgie_src_pad_buffer_probe()` collects
+both cameras' raw NV12 buffers within a SINGLE buffer/probe invocation
+(`nvstreammux` batches both sources into one `Gst.Buffer` per cycle) and
+completes the depth computation before returning — never stashed across
+calls, which would risk consuming a `get_nvds_buf_surface()` array after
+its surface is recycled. The throttle (`config.AVOID_UPDATE_INTERVAL_S`)
+gates buffer extraction itself, not just the SGBM pass, since
+`get_nvds_buf_surface()` may not be a free call. `src/mission.py`'s
+`Mission.on_obstacle_reading()` (the streaming-thread producer) and
+`ObstacleAvoidance.update()` (main-thread consumer, called from
+`main.py`'s `GLib.timeout_add`) follow the same producer/consumer split
+already established by `ObjectFollowController`.
+
+**No flight-mode gate, unlike FOLLOW/ISR** — `Mission.update()` streams
+`OBSTACLE_DISTANCE` continuously whenever the mavlink link is healthy,
+since this is sensor telemetry ArduPilot's own OA logic can use across
+GUIDED/AUTO/RTL, not a vehicle-motion command tied to one mode.
+
+**Safety, read before ever touching `AVOID_DRY_RUN`:** bad/wrongly-shaped
+distance data can still make ArduPilot's OA swerve incorrectly or refuse
+to proceed, even though this companion computer never sends a velocity
+setpoint for this mode. `config.AVOID_DRY_RUN` defaults `True` — every
+message is computed and logged (`[avoid] DRY RUN obstacle_distance ...`)
+but never sent. Validate bin-distance sanity and message contents on the
+bench first; then, with a GCS connected to the FC, confirm
+`OBSTACLE_DISTANCE` actually arrives (MAVLink Inspector/Proximity view)
+with `AVOID_DRY_RUN=False` in a supervised, props-off bench test — before
+ever trusting `OA_TYPE` to act on it in flight.
+
+**Horizontal FOV / angle mapping** (`src/avoidance.py build_obstacle_distance()`):
+derived from the rig's real rectified calibration
+(`2*atan(image_width / (2*fx))`), not hardcoded — same preference this
+project already applied when it sourced `FOCAL_LENGTH_PX`/
+`STEREO_BASELINE_M` from real chessboard calibration instead of a guess.
+Assumes the camera's optical axis is boresight-aligned with the vehicle's
+forward direction — unlike `src/extrinsics.py`'s geolocation chain, no
+camera→body mounting-angle correction is applied here yet (see "Known
+limitations" below).
+
+**Mutually exclusive with FOLLOW/ISR by `MISSION_MODE`'s design** — not a
+technical necessity. AVOID only streams sensor data rather than sending
+its own velocity setpoints, so it doesn't actually compete with FOLLOW's
+`SET_POSITION_TARGET_LOCAL_NED` commands for control authority (a real
+depth-camera + BendyRuler setup commonly runs proximity streaming *and* a
+guided-mode command source together) — see "Known limitations" below.
+
 ## Known limitations / Next steps
 
 - **`src/probes.py`'s always-on per-frame path is still monocular** —
@@ -597,6 +702,25 @@ change frame to frame.
 - **ISR mission mode is scaffolded but not implemented** — `Mission.
   _update_isr()` detects the trigger condition (flight mode + altitude)
   but does not yet log anything. Next milestone per project staging.
+- **AVOID's `pyds.get_nvds_buf_surface()` call is unverified on real
+  hardware** — same risk `src/stereo_depth.py` already flagged, now
+  actually exercised live for the first time (`src/probes.py`
+  `pgie_src_pad_buffer_probe`). Confirm it returns the expected shape
+  against this pipeline's NV12 buffers, and doesn't trigger a hidden
+  device-to-host sync copy per call (depends on `nvstreammux`'s memory
+  type) — the ~77-145ms benchmark in "Obstacle avoidance" above used
+  synthetic arrays in place of this call, not the real thing.
+- **AVOID's control-authority split from FOLLOW is unvalidated** —
+  `MISSION_MODE` gates them as mutually exclusive today (see "Obstacle
+  avoidance" above for why that's a config choice, not a hard technical
+  requirement). Running both concurrently (FOLLOW's velocity setpoints +
+  AVOID's `OBSTACLE_DISTANCE` streaming, letting ArduPilot's OA arbitrate)
+  is the natural real-world combination but hasn't been built or tested.
+- **AVOID assumes boresight-aligned camera mounting** — no camera→body
+  yaw correction is applied to `build_obstacle_distance()`'s angle
+  mapping, unlike the geolocation chain's (still placeholder)
+  `configs/camera_body_extrinsics.yaml`. A real mounting yaw offset would
+  bias which angular zone ArduPilot thinks each reading came from.
 - **Engine batch=1** (see export notes above) — revisit if fused-batch
   throughput becomes necessary once both cameras are running at full load.
 - RTSP branch currently sends **one composited (tiled) MJPEG stream**, not

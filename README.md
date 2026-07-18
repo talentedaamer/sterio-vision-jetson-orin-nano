@@ -49,9 +49,17 @@ shows live.*
   `src/extrinsics.py`) — **written but unverified on real hardware, and
   the mounting transform is still placeholder/unmeasured values**, see
   [CLAUDE.md § Geolocation](CLAUDE.md)
+- ✅ Obstacle avoidance (`MISSION_MODE=AVOID`) — band-wide stereo depth
+  (`src/obstacle_depth.py`) reduced to 5 angular bins, streamed to
+  ArduPilot's own proximity/object-avoidance system as MAVLink
+  `OBSTACLE_DISTANCE` (`src/avoidance.py`); this companion computer does
+  not compute steering itself. **Implemented but untested against real
+  flight hardware, defaults to a safe dry-run mode**, and
+  `pyds.get_nvds_buf_surface()` (the raw-buffer path) is exercised live
+  for the first time here — see [CLAUDE.md § Obstacle avoidance](CLAUDE.md)
 - ⏳ Not yet done: object tracking (persistent IDs), ISR data-logging
-  mission mode, multi-frame fusion for geolocation — see
-  [Roadmap](#roadmap--known-limitations)
+  mission mode, multi-frame fusion for geolocation, concurrent FOLLOW+AVOID
+  — see [Roadmap](#roadmap--known-limitations)
 
 ## Hardware
 
@@ -178,16 +186,18 @@ directly on this Jetson whenever the model changes; see
 | [`export_engine.py`](export_engine.py) | Runs the (unmodified) `.pt → .engine` export directly on-device, with diagnostics (torch/CUDA/TensorRT versions, free GPU memory, clear failure messages) and automatic install into `models/`. |
 | [`src/config.py`](src/config.py) | All tunables in one place: camera capture settings, model/engine paths, target detection classes, distance-estimation constants, tiler/RTSP settings. |
 | [`src/pipeline.py`](src/pipeline.py) | Builds and links the full GStreamer/DeepStream pipeline (cameras → mux → inference → tiler → OSD → RTSP/debug branches) and starts the RTSP server. |
-| [`src/probes.py`](src/probes.py) | The per-frame metadata probe: filters to target classes, computes distance per detection, sets on-screen label text. `register_detection_listener()` lets other code subscribe to every detection (full rate) without editing this file — used by `src/debug_plot.py` and `src/mission.py`. `register_frame_status_provider()` draws a one-line on-screen HUD (MAVLink/mission status) in both the RTSP stream and `--debug`'s local display. |
+| [`src/probes.py`](src/probes.py) | The per-frame metadata probe: filters to target classes, computes distance per detection, sets on-screen label text. `register_detection_listener()` lets other code subscribe to every detection (full rate) without editing this file — used by `src/debug_plot.py` and `src/mission.py`. `register_frame_status_provider()` draws a one-line on-screen HUD (MAVLink/mission status) in both the RTSP stream and `--debug`'s local display. `register_obstacle_listener()` lets `src/mission.py` subscribe to (bin_distances_m, bin_valid_mask) readings, throttled to `config.AVOID_UPDATE_INTERVAL_S`. |
 | [`src/distance.py`](src/distance.py) | Monocular X/Y/Z estimator (known object height + focal length, always-on), plus `estimate_xyz_stereo()` — the pure-math half of real stereo depth, given a disparity value. |
 | [`src/calibration.py`](src/calibration.py) | Loads `configs/stereo_calibration.yaml`; rectification maps for stereo depth. |
 | [`src/stereo_depth.py`](src/stereo_depth.py) | On-demand (not per-frame) real stereo disparity for one detection at a time. See [CLAUDE.md § Geolocation](CLAUDE.md). |
+| [`src/obstacle_depth.py`](src/obstacle_depth.py) | Band-wide (not per-detection) stereo disparity → per-bin depth for `MISSION_MODE=AVOID`, with a RealSense-style decimation/spatial/hole-filling filter chain. See [CLAUDE.md § Obstacle avoidance](CLAUDE.md). |
+| [`src/avoidance.py`](src/avoidance.py) | NOT a steering controller — builds and streams MAVLink `OBSTACLE_DISTANCE` from `src/obstacle_depth.py`'s bin readings; ArduPilot's own `OA_TYPE` does the actual avoidance. See [CLAUDE.md § Obstacle avoidance](CLAUDE.md). |
 | [`src/extrinsics.py`](src/extrinsics.py) | Loads `configs/camera_body_extrinsics.yaml`, the camera→body mounting transform. |
 | [`src/geolocation.py`](src/geolocation.py) | `camera_to_latlon()` — the full camera → body → NED → lat/lon/alt chain. |
 | [`src/debug_plot.py`](src/debug_plot.py) | `--debug`-only: live 3D scatter plot of detection X/Y/Z via matplotlib, colored as a depth heatmap (near=red, far=blue) with marker shape indicating camera. Needs a display attached to the Jetson and a working GUI backend (Tk/Qt/GTK) — same physical requirement as the `nveglglessink` bench-display branch; degrades to a harmless no-op with a warning if unavailable. |
-| [`src/mavlink_link.py`](src/mavlink_link.py) | `MavlinkLink`: UART connection to the flight controller, background telemetry reader, IMU/GPS/compass getters, `send_velocity_setpoint()`. See [MAVLink / Mission](#mavlink--mission). |
+| [`src/mavlink_link.py`](src/mavlink_link.py) | `MavlinkLink`: UART connection to the flight controller, background telemetry reader, IMU/GPS/compass getters, `send_velocity_setpoint()` (FOLLOW), `send_obstacle_distance()` (AVOID). See [MAVLink / Mission](#mavlink--mission). |
 | [`src/pid.py`](src/pid.py) | `PIDController` (generic) + `ObjectFollowController` (the drone-follow control loop). |
-| [`src/mission.py`](src/mission.py) | `Mission`: gates FOLLOW/ISR behind `config.MISSION_MODE` + the flight controller's live flight mode. ISR is scaffolded, not yet implemented. |
+| [`src/mission.py`](src/mission.py) | `Mission`: gates FOLLOW/ISR/AVOID behind `config.MISSION_MODE` (FOLLOW/ISR additionally gated on the flight controller's live flight mode; AVOID is not). ISR is scaffolded, not yet implemented. |
 | [`configs/pgie_yolo26n_config.txt`](configs/pgie_yolo26n_config.txt) | `nvinfer` configuration for the YOLO26n engine (batch size, confidence threshold, custom parser wiring, `cluster-mode=4` since the model's output is already NMS'd). |
 | [`configs/labels_coco.txt`](configs/labels_coco.txt) | COCO-80 class names, index-matched to the engine's output classes. |
 | [`nvdsinfer_custom_impl_yolo26/`](nvdsinfer_custom_impl_yolo26) | C++ custom bbox parser (`.cpp` + `Makefile`) for the engine's already-final (NMS-free/end-to-end) output head — must be compiled on-device. |
@@ -298,6 +308,100 @@ mission mode is set).
 > straight to free flight. Full detail in
 > [CLAUDE.md § MAVLink / Mission](CLAUDE.md).
 
+## Obstacle avoidance
+
+`MISSION_MODE=AVOID` streams MAVLink `OBSTACLE_DISTANCE`, built from a
+low-rate band-wide stereo depth read (`src/obstacle_depth.py`, 5 angular
+bins) and a RealSense-style filter chain, to ArduPilot's own proximity/
+object-avoidance system (`OA_TYPE`=BendyRuler/Dijkstra's) — this companion
+computer does not compute a steering command for this mode, unlike FOLLOW.
+Mutually exclusive with FOLLOW/ISR via `MISSION_MODE` today (a config
+choice, not a technical requirement — see below).
+
+> [!WARNING]
+> Same posture as FOLLOW: **untested against real flight hardware**.
+> `config.AVOID_DRY_RUN` defaults to `True` — every `OBSTACLE_DISTANCE`
+> message is computed and logged, never sent. Requires FC-side setup too
+> (`PRX1_TYPE`, `OA_TYPE`) — full detail, including a real on-device
+> timing benchmark of the depth pipeline, in
+> [CLAUDE.md § Obstacle avoidance](CLAUDE.md).
+
+### Testing AVOID mode
+
+**Prerequisite check** — this pipeline needs the cameras actually
+streaming before there's anything for AVOID to compute against. Confirm
+first, separately from anything AVOID-specific:
+```bash
+v4l2-ctl --list-devices              # should enumerate the Tegra video input
+sudo systemctl status nvargus-daemon # should be active; check its journal
+                                      # (journalctl -u nvargus-daemon) for
+                                      # sensor-init errors ("ModuleNotPresent",
+                                      # "Sensor could not be opened") -- that's
+                                      # a camera-hardware/cabling issue, not a
+                                      # software bug in this project or in
+                                      # AVOID mode specifically.
+```
+Run via the venv's `python` directly (not `uv run`) for these tests, same
+reasoning as the systemd service — doesn't depend on network/lockfile
+checks.
+
+**Without debugging** (headless, matches how it actually flies):
+```bash
+MISSION_MODE=AVOID AVOID_DRY_RUN=1 .venv/bin/python main.py
+```
+Expect, in order: `[rtsp] streaming at rtsp://...`, `[mavlink] waiting for
+heartbeat...` then `connected: system=X component=Y` (this still
+"connects" even with no flight controller attached — MAVLink's serial
+open doesn't require a live peer; `is_link_healthy()`/the status line
+correctly show `NO HEARTBEAT` in that case), `[main] mission mode: AVOID
+(dry_run=True)`, then once real obstacle readings start flowing:
+`[avoid] DRY RUN obstacle_distance bins=[...]` roughly every
+`AVOID_UPDATE_INTERVAL_S` (0.2s default), and `[status] ... MISSION:NO
+DATA YET` flipping to `MISSION:STREAMING` on the first reading. Watch the
+plain video feed from another machine with `ffplay
+rtsp://<jetson-ip>:8554/ds-stereo` (no per-bin overlay is drawn on it —
+OSD visualization of bins is explicitly out of scope this phase).
+
+**With debugging**:
+```bash
+MISSION_MODE=AVOID AVOID_DRY_RUN=1 .venv/bin/python main.py --debug
+```
+Adds the local bench-display branch — needs an actual monitor via HDMI/DP
+physically on the Jetson (does nothing over plain SSH, same caveat as the
+rest of this project). If no monitor is available but you want more
+visibility than the default `[avoid]`/`[status]` lines, temporarily add a
+`print()` in `src/probes.py`'s `_run_obstacle_depth()` right after
+`obstacle_depth.estimate_bin_distances()` returns — that shows the RAW
+per-cycle reading before `src/avoidance.py`'s temporal EMA smooths it.
+
+**Validating the reading is sane**: point the rig at an object at a known
+(tape-measured) distance; confirm the corresponding bin in the `[avoid]`
+log is in the right ballpark (±10-20cm at close range is reasonable for a
+first-pass rig), and that it tracks as the object moves closer/farther.
+Confirm the deterministic left-edge bin consistently reads `--` (no-data),
+not a fabricated value.
+
+**Enabling for real**, only after all of the above looks right: set the
+FC's `PRX1_TYPE`/`OA_TYPE` params, then with a GCS connected and
+`AVOID_DRY_RUN` still `1`, cross-check this pipeline's MAVLink
+connect/heartbeat log lines against what the GCS itself shows. Only then,
+in a supervised bench test with props off, set `AVOID_DRY_RUN=0` and
+confirm the GCS's MAVLink Inspector/Proximity view shows incoming
+`OBSTACLE_DISTANCE` — before ever trusting `OA_TYPE` to act on it in a
+supervised, low-altitude tethered flight test.
+
+**What's actually been verified as of this writing**: a bounded live run
+on this exact device confirmed the pipeline builds, the engine loads, the
+RTSP server starts, MAVLink connects and correctly reports `NO HEARTBEAT`/
+`NO DATA YET` with no flight controller attached, and shuts down cleanly.
+The camera sensors themselves were not enumerable on this bench at test
+time (`nvargus-daemon` logged `ModuleNotPresent`/"Sensor could not be
+opened" — a hardware/cabling precondition unrelated to this feature), so
+the actual per-frame obstacle-depth path
+(`get_nvds_buf_surface`→`obstacle_depth`→`OBSTACLE_DISTANCE`) has not yet
+been exercised with real video — that remains the next validation step
+once the cameras are confirmed working via the prerequisite check above.
+
 ## Roadmap / known limitations
 
 - **The always-on per-frame path is still monocular** — real stereo depth
@@ -323,6 +427,12 @@ mission mode is set).
 - **FOLLOW is implemented but flight-untested** — see the warning above;
   defaults to a dry-run mode that never sends commands to the flight
   controller.
+- **AVOID is implemented but flight-untested**, and its
+  `pyds.get_nvds_buf_surface()` call is exercised live for the first time
+  (same unverified risk `stereo_depth.py` already carried). Concurrent
+  FOLLOW+AVOID (ArduPilot arbitrating between velocity setpoints and
+  proximity-triggered avoidance) is the natural real-world combination but
+  isn't built — see [CLAUDE.md § Obstacle avoidance](CLAUDE.md).
 - **Engine batch size is 1** — the exported engine doesn't use
   `dynamic=True`, so `nvinfer` runs one inference call per camera per
   cycle rather than a single fused batch-of-2 call. Both still run

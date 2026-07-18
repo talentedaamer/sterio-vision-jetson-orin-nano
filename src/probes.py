@@ -31,7 +31,21 @@ mode, live flight mode, follow state) via register_frame_status_provider(),
 visible in both the RTSP stream and the --debug local display. Optional:
 a no-op until something calls register_frame_status_provider() (see
 src/mission.py via main.py).
+
+When MISSION_MODE=="AVOID", pgie_src_pad_buffer_probe() also collects both
+sources' raw NV12 buffers (source_id 0=left, 1=right) within the SAME
+buffer/probe call -- nvstreammux batches both cameras into one Gst.Buffer
+per cycle, so both are visited within one pass of the frame_meta loop
+below -- and, throttled to config.AVOID_UPDATE_INTERVAL_S (NOT full frame
+rate), calls obstacle_depth.estimate_bin_distances() and fires
+on_obstacle_reading() listeners (register_obstacle_listener(), same
+pattern as on_detection()). This is entirely skipped (zero cost) in any
+other mode. See src/obstacle_depth.py for why this must complete before
+the probe returns rather than being deferred across calls, and CLAUDE.md
+"Prerequisite validation" -- this is the first live use of
+pyds.get_nvds_buf_surface() in this project's always-on pipeline.
 """
+import time
 from typing import Callable, Optional
 
 import gi
@@ -47,6 +61,10 @@ _listeners: list[Callable[[Detection], None]] = []
 _frame_status_provider: Optional[Callable[[], Optional[str]]] = None
 _follow_active_query: Optional[Callable[[], bool]] = None
 _smoothers: dict = {}   # (source_id, class_id) -> SmoothedDetection
+
+_obstacle_listeners: list[Callable[[list, list], None]] = []
+_last_obstacle_update_time = 0.0
+_obstacle_calib = None   # lazy StereoCalibration singleton, AVOID mode only
 
 
 def register_frame_status_provider(callback: Callable[[], Optional[str]]) -> None:
@@ -89,7 +107,50 @@ def on_detection(detection: Detection) -> None:
         listener(detection)
 
 
+def register_obstacle_listener(callback: Callable[[list, list], None]) -> None:
+    """Subscribe to receive (bin_distances_m, bin_valid_mask) whenever a
+    new obstacle reading is computed -- throttled to
+    config.AVOID_UPDATE_INTERVAL_S inside pgie_src_pad_buffer_probe, NOT
+    full frame rate (see module docstring). Same threading contract as
+    register_detection_listener(): called from the GStreamer streaming
+    thread, keep callbacks cheap/thread-safe. Used by src/mission.py."""
+    _obstacle_listeners.append(callback)
+
+
+def on_obstacle_reading(bin_distances_m: list, bin_valid_mask: list) -> None:
+    for listener in _obstacle_listeners:
+        listener(bin_distances_m, bin_valid_mask)
+
+
+def _run_obstacle_depth(source_buffers: dict) -> None:
+    """Called once per buffer from pgie_src_pad_buffer_probe, only after
+    MISSION_MODE/listener/throttle gating already passed and both
+    source_id 0 (left) and 1 (right) raw buffers were collected this
+    cycle. Everything here (buffer surface extraction, rectification,
+    cv2.StereoSGBM) is genuinely new, UNVERIFIED live-pipeline code -- see
+    src/obstacle_depth.py's docstring before trusting its output."""
+    global _obstacle_calib
+    if 0 not in source_buffers or 1 not in source_buffers:
+        return
+
+    # Lazy imports -- cv2/numpy/calibration/obstacle_depth are only ever
+    # touched when AVOID mode is actually configured, zero cost/impact
+    # otherwise (same convention as main.py's MISSION_MODE-gated imports).
+    from . import obstacle_depth
+    from .calibration import load as load_calibration
+
+    if _obstacle_calib is None:
+        _obstacle_calib = load_calibration()
+
+    bin_distances_m, bin_valid_mask = obstacle_depth.estimate_bin_distances(
+        source_buffers[0], source_buffers[1], _obstacle_calib,
+    )
+    on_obstacle_reading(bin_distances_m, bin_valid_mask)
+
+
 def pgie_src_pad_buffer_probe(pad, info, u_data):
+    global _last_obstacle_update_time
+
     buf = info.get_buffer()
     if not buf:
         return Gst.PadProbeReturn.OK
@@ -97,6 +158,21 @@ def pgie_src_pad_buffer_probe(pad, info, u_data):
     batch_meta = pyds.gst_buffer_get_nvds_batch_meta(hash(buf))
     if not batch_meta:
         return Gst.PadProbeReturn.OK
+
+    # Throttled BEFORE any buffer-surface extraction is attempted --
+    # get_nvds_buf_surface() may not be a free call (possible
+    # device-to-host copy depending on nvstreammux's memory type), so this
+    # gate must run first, not just the SGBM pass downstream of it. Zero
+    # cost/risk in any mode other than AVOID.
+    now = time.monotonic()
+    collect_obstacle_buffers = (
+        config.MISSION_MODE == "AVOID"
+        and bool(_obstacle_listeners)
+        and (now - _last_obstacle_update_time) >= config.AVOID_UPDATE_INTERVAL_S
+    )
+    source_buffers = {} if collect_obstacle_buffers else None
+    if collect_obstacle_buffers:
+        _last_obstacle_update_time = now
 
     l_frame = batch_meta.frame_meta_list
     while l_frame is not None:
@@ -107,6 +183,14 @@ def pgie_src_pad_buffer_probe(pad, info, u_data):
 
         frame_w = frame_meta.source_frame_width or config.CAPTURE_WIDTH
         frame_h = frame_meta.source_frame_height or config.CAPTURE_HEIGHT
+
+        if collect_obstacle_buffers and frame_meta.source_id in (0, 1):
+            try:
+                source_buffers[frame_meta.source_id] = pyds.get_nvds_buf_surface(
+                    hash(buf), frame_meta.batch_id
+                )
+            except Exception as exc:  # pragma: no cover -- see obstacle_depth.py "UNVERIFIED"
+                print(f"[avoid] get_nvds_buf_surface failed for source_id={frame_meta.source_id}: {exc}")
 
         l_obj = frame_meta.obj_meta_list
         while l_obj is not None:
@@ -202,6 +286,9 @@ def pgie_src_pad_buffer_probe(pad, info, u_data):
             l_frame = l_frame.next
         except StopIteration:
             break
+
+    if collect_obstacle_buffers:
+        _run_obstacle_depth(source_buffers)
 
     return Gst.PadProbeReturn.OK
 

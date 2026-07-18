@@ -9,7 +9,8 @@ All MAVLink message reception happens on a single background thread
 (started by connect()); the public get_*() methods return a thread-safe
 snapshot of the latest known values and are safe to call from any thread
 (e.g. the GStreamer streaming thread via src/probes.py, or the main/GLib
-thread). send_velocity_setpoint() is likewise safe to call from any thread.
+thread). send_velocity_setpoint() (FOLLOW) and send_obstacle_distance()
+(AVOID) are likewise safe to call from any thread.
 
 Three telemetry methods, per the intended usage:
   - get_imu_telemetry() -- IMU-only (roll/pitch/yaw, angular rate, xyz
@@ -318,6 +319,37 @@ class MavlinkLink:
         if gps is None or not gps.has_fix:
             return Telemetry(imu=imu, gps=None)
         return Telemetry(imu=imu, gps=gps)
+
+    def send_obstacle_distance(self, distances_cm: list, increment_f_deg: float,
+                                min_distance_cm: int, max_distance_cm: int,
+                                angle_offset_deg: float) -> None:
+        """Sends a MAVLink OBSTACLE_DISTANCE message -- sensor telemetry
+        for ArduPilot's own proximity/object-avoidance system (OA_TYPE),
+        not a direct vehicle-motion command like send_velocity_setpoint()
+        below. See src/avoidance.py (the only caller) for how
+        distances_cm/increment_f_deg/angle_offset_deg are derived from the
+        stereo rig's per-bin readings and real calibration.
+
+        distances_cm: length-72 list (MAVLink's fixed array length), cm,
+          MAV_DISTANCE_SENSOR_UNKNOWN-typed (no CAMERA type exists in the
+          MAV_DISTANCE_SENSOR enum), with 65535 for any sector with no
+          reading. frame=MAV_FRAME_BODY_FRD (vehicle-forward-aligned) --
+          see src/avoidance.py's docstring for the boresight-alignment
+          assumption this implies. Thread-safe to call from any thread.
+        """
+        if self._master is None:
+            return
+        self._master.mav.obstacle_distance_send(
+            0,  # time_usec -- 0 lets the receiver use its own arrival time
+            mavutil.mavlink.MAV_DISTANCE_SENSOR_UNKNOWN,
+            distances_cm,
+            0,  # increment (uint8) -- ignored in favor of increment_f below
+            int(min_distance_cm),
+            int(max_distance_cm),
+            increment_f_deg,
+            angle_offset_deg,
+            mavutil.mavlink.MAV_FRAME_BODY_FRD,
+        )
 
     def send_velocity_setpoint(self, vx: float, vy: float, vz: float) -> None:
         """Command a body-frame velocity setpoint in m/s (vx=forward,

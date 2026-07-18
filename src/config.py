@@ -143,16 +143,23 @@ MAVLINK_HEARTBEAT_TIMEOUT_S = 5.0  # link considered down if no HEARTBEAT for th
 MAVLINK_ATTITUDE_BUFFER_S = 2.0
 
 # ---------------------------------------------------------------------------
-# Mission mode -- gates FOLLOW / ISR behavior (see src/mission.py). Neither
-# mission ever starts just because this process is running: FOLLOW also
-# requires the flight controller to actually be in FOLLOW_TRIGGER_FLIGHT_MODE,
-# and ISR requires ISR_TRIGGER_FLIGHT_MODE + reaching ISR_TRIGGER_ALTITUDE_M.
+# Mission mode -- gates FOLLOW / ISR / AVOID behavior (see src/mission.py).
+# Neither FOLLOW nor ISR ever starts just because this process is running:
+# FOLLOW also requires the flight controller to actually be in
+# FOLLOW_TRIGGER_FLIGHT_MODE, and ISR requires ISR_TRIGGER_FLIGHT_MODE +
+# reaching ISR_TRIGGER_ALTITUDE_M. AVOID has no flight-mode gate -- see
+# src/mission.py and the "AVOID" block below for why.
 # ---------------------------------------------------------------------------
 # "NONE"   -- no MAVLink connection is even opened; camera/detection
 #             pipeline behaves exactly as before this feature existed.
 # "FOLLOW" -- PID-drive the drone to hold station on FOLLOW_TARGET_CLASS.
 # "ISR"    -- NOT YET IMPLEMENTED (next milestone). Will log detected-object
 #             + IMU + GPS data to CSV/JSON once triggered.
+# "AVOID"  -- streams MAVLink OBSTACLE_DISTANCE (computed from stereo,
+#             src/obstacle_depth.py) to ArduPilot's own proximity/object-
+#             avoidance system (OA_TYPE=BendyRuler/Dijkstra's). This
+#             companion computer does NOT compute steering commands for
+#             this mode -- see src/avoidance.py.
 MISSION_MODE = os.environ.get("MISSION_MODE", "NONE").upper()
 
 # --- FOLLOW ---
@@ -176,3 +183,59 @@ FOLLOW_DRY_RUN = os.environ.get("FOLLOW_DRY_RUN", "1") == "1"
 ISR_TRIGGER_FLIGHT_MODE = "AUTO"
 ISR_TRIGGER_ALTITUDE_M = 30.0
 ISR_LOG_FORMAT = "csv"  # or "json" -- see src/mission.py
+
+# --- AVOID (obstacle avoidance -- src/obstacle_depth.py + src/avoidance.py) ---
+# Streams MAVLink OBSTACLE_DISTANCE built from a low-rate stereo depth read.
+# ArduPilot's own OA_TYPE (BendyRuler/Dijkstra's) decides whether/how to
+# bend the flight path -- this project never sends a velocity setpoint for
+# this mode. FC-side prerequisites (not this repo): PRX1_TYPE=MAVLink,
+# OA_TYPE set to BendyRuler or Dijkstra's, OA_DB_SIZE/OA_DB_EXPIRE as needed.
+#
+# The center vertical band of the rectified frame (AVOID_BIN_HEIGHT_FRACTION)
+# is split into AVOID_NUM_BINS columns, left to right, matching the
+# left-camera-as-reference convention in src/calibration.py/stereo_depth.py.
+AVOID_NUM_BINS = 5
+AVOID_BIN_HEIGHT_FRACTION = 0.4
+# Depth readings outside this range are treated as invalid, and also define
+# OBSTACLE_DISTANCE's min_distance/max_distance fields (cm) directly.
+AVOID_MIN_VALID_DEPTH_M = 0.3
+AVOID_MAX_VALID_DEPTH_M = 4.0
+# OBSTACLE_DISTANCE send rate. Independent of FOLLOW_UPDATE_INTERVAL_S --
+# see main.py, which picks the interval matching the active MISSION_MODE.
+AVOID_UPDATE_INTERVAL_S = 0.2
+# Decimation stage: downsample the rectified band crop by this factor
+# before running cv2.StereoSGBM, to bound CPU cost. Disparity is rescaled
+# by this same factor before the depth formula -- do NOT scale
+# FOCAL_LENGTH_PX instead. Measured on-device (this Jetson, synthetic
+# stereo pairs at this rig's real 1456x1088/AVOID_BIN_HEIGHT_FRACTION=0.4
+# band size, this project's real chessboard calibration): full
+# estimate_bin_distances() (rectify+band+SGBM+spatial-filter+binning)
+# averaged ~145ms at factor=2, ~90ms at factor=3, ~77ms at factor=4 --
+# against a 200ms/5Hz budget (AVOID_UPDATE_INTERVAL_S) and this project's
+# own measured YOLO+OSD baseline of 45-70% CPU/core (CLAUDE.md "GPU
+# utilization model"), factor=2 leaves too little headroom once the
+# still-unmeasured buffer-extraction cost is added. 4 is the safer
+# starting point; raise resolution (lower this) later only after
+# confirming real headroom exists once everything is wired together live.
+AVOID_DECIMATION_FACTOR = 4
+# Spatial stage: edge-preserving smoothing over the disparity/depth array
+# before binning. src/obstacle_depth.py picks cv2.ximgproc's WLS filter if
+# the on-device OpenCV build has the contrib module, else a plain
+# cv2.bilateralFilter -- this flag only disables the stage entirely.
+AVOID_SPATIAL_FILTER_ENABLED = True
+# Temporal stage: per-bin EMA across cycles (applied after binning, not
+# per-pixel -- see src/avoidance.py BinDistanceSmoother). Smaller = smoother
+# but slower to react to a fast-closing obstacle.
+AVOID_TEMPORAL_EMA_ALPHA = 0.3
+# Hole-filling stage: a bin whose valid-pixel fraction falls below this is
+# filled from its neighboring valid bins (sparse/noisy gaps -- occlusion,
+# low texture). The deterministic left-edge strip (no stereo match is
+# possible there regardless of scene content -- see src/obstacle_depth.py
+# "edge effect") is marked no-data instead of filled, since it isn't noise.
+AVOID_BIN_MIN_VALID_FRACTION = 0.1
+# SAFETY: while True, every OBSTACLE_DISTANCE message is computed and
+# logged but never sent to the flight controller. Bad/wrongly-shaped
+# distance data can make ArduPilot's OA swerve incorrectly or refuse to
+# proceed, so validate message contents/rate on the bench first -- same
+# posture as FOLLOW_DRY_RUN.
+AVOID_DRY_RUN = os.environ.get("AVOID_DRY_RUN", "1") == "1"

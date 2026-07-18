@@ -77,6 +77,7 @@ def main() -> int:
             register_detection_listener,
             register_follow_active_query,
             register_frame_status_provider,
+            register_obstacle_listener,
         )
 
         mavlink = MavlinkLink()
@@ -86,8 +87,20 @@ def main() -> int:
         register_frame_status_provider(mission.status_text)  # on-screen HUD, RTSP + --debug
         if mission.follow is not None:
             register_follow_active_query(lambda: mission.follow.active)  # red lock-on box + center marker
-        GLib.timeout_add(int(config.FOLLOW_UPDATE_INTERVAL_S * 1000), mission.update)
-        print(f"[main] mission mode: {config.MISSION_MODE} (dry_run={config.FOLLOW_DRY_RUN})")
+        if mission.avoidance is not None:
+            register_obstacle_listener(mission.on_obstacle_reading)
+
+        # Update interval matches whichever mode is actually active --
+        # ISR (not yet implemented) keeps FOLLOW's interval as a
+        # pre-existing default, out of scope to give it its own knob here.
+        if config.MISSION_MODE == "AVOID":
+            update_interval_s = config.AVOID_UPDATE_INTERVAL_S
+            dry_run = config.AVOID_DRY_RUN
+        else:
+            update_interval_s = config.FOLLOW_UPDATE_INTERVAL_S
+            dry_run = config.FOLLOW_DRY_RUN
+        GLib.timeout_add(int(update_interval_s * 1000), mission.update)
+        print(f"[main] mission mode: {config.MISSION_MODE} (dry_run={dry_run})")
 
     def shutdown(*_args):
         print("\n[main] shutting down")
